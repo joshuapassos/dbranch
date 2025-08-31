@@ -39,6 +39,8 @@ pub enum Commands {
     DeleteProject(DeleteProjectArgs),
     #[clap(about = "Show details of a branch project")]
     Show(ShowArgs),
+    #[clap(about = "Show the status of a project")]
+    Status,
 }
 
 #[derive(Args, Debug)]
@@ -307,6 +309,30 @@ impl CliHandler {
                 Err(AppError::NotImplemented {
                     command: "show".into(),
                 })
+            }
+            Commands::Status => {
+                info!("Showing status of the active project");
+
+                let project = self
+                    .state
+                    .config
+                    .get_project_info(None)
+                    .ok_or_else(|| AppError::DefaultProjectNotFound)?;
+
+                debug!("Active project found: {}", project.name);
+                println!("{}", String::from("-").repeat(60));
+                println!("🌐 Project Name: {}", project.name);
+                println!("⚙️  Project Path: {}", project.path.to_string_lossy());
+
+                println!(
+                    "🌿 Active Branch: {}",
+                    project
+                        .active_branch
+                        .as_deref()
+                        .unwrap_or("No active branch 🆓")
+                );
+                println!("{}", String::from("-").repeat(60));
+                Ok(())
             }
         }
     }
