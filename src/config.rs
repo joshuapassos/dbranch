@@ -256,6 +256,44 @@ impl Config {
         info!("Project {} added successfully", project.name);
     }
 
+    pub fn remove_project(&mut self, name: &str) -> Result<(), AppError> {
+        info!("Removing project: {}", name);
+        
+        if !self.projects.contains(&name.to_string()) {
+            debug!("Project {} not found in project list", name);
+            return Err(AppError::ProjectNotFound {
+                name: name.to_string(),
+            });
+        }
+
+        // Remove from projects list
+        self.projects.retain(|p| p != name);
+        debug!("Project {} removed from config list", name);
+
+        // Remove project directory
+        let project_dir = self.path.join(name);
+        debug!("Removing project directory: {:?}", project_dir);
+        
+        if project_dir.exists() {
+            match fs::remove_dir_all(&project_dir) {
+                Ok(_) => {
+                    info!("Project directory removed successfully");
+                }
+                Err(e) => {
+                    debug!("Failed to remove project directory: {}", e);
+                    return Err(AppError::FileSystem {
+                        message: format!("Failed to remove project directory: {}", e),
+                    });
+                }
+            }
+        }
+
+        debug!("Total projects now: {}", self.projects.len());
+        self.save_config();
+        info!("Project {} removed successfully", name);
+        Ok(())
+    }
+
     fn create_project(&self, project: Project) -> Result<(), AppError> {
         let project_dir = Path::new(&self.path).join(project.name.clone());
         debug!("Creating project directory: {:?}", project_dir);

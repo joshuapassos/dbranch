@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use docker_wrapper::{DockerCommand, NetworkCreateCommand, NetworkLsCommand, RunCommand};
+use docker_wrapper::{
+    DockerCommand, NetworkCreateCommand, NetworkLsCommand, RmCommand, RunCommand, StopCommand,
+};
 use tracing::{debug, info};
 
 use crate::{
@@ -86,7 +88,7 @@ impl DatabaseOperator for PostgresOperator {
                 .unwrap_or(&"dbranch".to_string())
         );
 
-        let output = RunCommand::new("postgres:17-alpine")
+        let _output = RunCommand::new("postgres:17-alpine")
             .name(name)
             .port(port, 5432)
             .network("dbranch-network")
@@ -125,8 +127,42 @@ impl DatabaseOperator for PostgresOperator {
             "Deleting PostgreSQL database '{}' for project '{}'",
             name, project.name
         );
-        debug!("Delete operation not yet implemented");
-        // TODO: Implement PostgreSQL database deletion logic here
+
+        debug!("Stopping and removing PostgreSQL container: {}", name);
+
+        let stop_output = StopCommand::new(name)
+            .execute()
+            .await
+            .map_err(|e| AppError::Docker {
+                message: format!("Failed to stop Docker container {}: {}", name, e),
+            })?;
+
+        if !(stop_output.is_success()) {
+            debug!(
+                "Container {} might already be stopped: {}",
+                name, stop_output.stderr
+            );
+        } else {
+            info!("Container {} stopped successfully", name);
+        }
+
+        let rm_output = RmCommand::new(name)
+            .execute()
+            .await
+            .map_err(|e| AppError::Docker {
+                message: format!("Failed to remove Docker container {}: {}", name, e),
+            })?;
+
+        if !(rm_output.removed_contexts().len() > 0) {
+            debug!(
+                "Container {} might already be stopped: {}",
+                name, rm_output.stderr
+            );
+        } else {
+            info!("Container {} stopped successfully", name);
+        }
+
+        info!("PostgreSQL container '{}' deleted successfully", name);
         Ok(())
     }
 

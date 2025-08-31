@@ -1,3 +1,4 @@
+use crate::config::Config;
 use crate::error;
 use crate::error::AppError;
 use anyhow::Result;
@@ -39,15 +40,11 @@ pub struct BtrfsOperator {
 }
 
 impl BtrfsOperator {
-    pub fn new(img_path: PathBuf, mount_point: String, size: u64) -> Self {
-        debug!(
-            "Creating BtrfsOperator: img={:?}, mount={}, size={} bytes",
-            img_path, mount_point, size
-        );
+    pub fn new(project_path: PathBuf, config: Config) -> Self {
         Self {
-            img_path,
-            mount_point,
-            size,
+            img_path: project_path.join("image.img"),
+            mount_point: config.mount_point,
+            size: 5 * 1024 * 1024 * 1024, // Default size: 5GB
         }
     }
 
@@ -284,6 +281,42 @@ impl BtrfsOperator {
         } else {
             Err(String::from_utf8_lossy(&output.stderr).into())
         }
+    }
+
+    pub fn cleanup_disk(&self) -> Result<(), error::AppError> {
+        info!("Starting disk cleanup process for {:?}", self.img_path);
+
+        // First try to unmount the disk if it's mounted
+        match self.unmount_disk() {
+            Ok(_) => {
+                debug!("Disk unmounted successfully");
+            }
+            Err(e) => {
+                debug!("Failed to unmount disk (might not be mounted): {}", e);
+                // Continue with cleanup even if unmount fails
+            }
+        }
+
+        // Remove the disk image file if it exists
+        if self.img_path.exists() {
+            debug!("Removing disk image file: {:?}", self.img_path);
+            match fs::remove_file(&self.img_path) {
+                Ok(_) => {
+                    info!("Disk image file removed successfully");
+                }
+                Err(e) => {
+                    debug!("Failed to remove disk image file: {}", e);
+                    return Err(AppError::FileSystem {
+                        message: format!("Failed to remove disk image file: {}", e),
+                    });
+                }
+            }
+        } else {
+            debug!("Disk image file does not exist, skipping removal");
+        }
+
+        info!("Disk cleanup completed successfully");
+        Ok(())
     }
 
     // pub fn create_snapshot(&self, snapshot_name: &str) -> Result<(), String> {

@@ -164,11 +164,8 @@ impl CliHandler {
                 // Mount disk
                 {
                     debug!("Initializing BTRFS disk mount process");
-                    let mut btrfs_operator = btrfs::BtrfsOperator::new(
-                        project.path.join("disk.img"),
-                        self.state.config.mount_point.clone(),
-                        1024 * 1024 * 1024, // 1Gb
-                    );
+                    let mut btrfs_operator =
+                        btrfs::BtrfsOperator::new(project.path.clone(), self.state.config.clone());
 
                     debug!("Checking BTRFS installation");
                     btrfs_operator.check_btrfs().unwrap();
@@ -253,10 +250,56 @@ impl CliHandler {
             }
             Commands::DeleteProject(args) => {
                 info!("Deleting project: {}", args.name);
-                debug!("DeleteProject command not yet implemented");
-                Err(AppError::NotImplemented {
-                    command: "delete_project".into(),
-                })
+
+                if !self.state.config.projects.contains(&args.name) {
+                    debug!("Project {} not found in config", args.name);
+                    return Err(AppError::ProjectNotFound { name: args.name });
+                }
+
+                let project = self
+                    .state
+                    .config
+                    .get_project_info(Some(args.name.clone()))
+                    .ok_or_else(|| AppError::ProjectNotFound {
+                        name: args.name.clone(),
+                    })?;
+
+                debug!("Found project to delete: {:?}", project);
+
+                // Delete PostgreSQL container
+                {
+                    debug!("Deleting PostgreSQL container");
+                    let postgres_operator = PostgresOperator::new();
+                    postgres_operator
+                        .delete_database(project.clone(), &format!("dbranch_{}", project.name))
+                        .await?;
+                }
+
+                // Delete BTRFS disk and unmount
+                {
+                    debug!("Cleaning up BTRFS disk");
+                    let btrfs_operator =
+                        crate::btrfs::BtrfsOperator::new(project.path, self.state.config.clone());
+
+                    btrfs_operator.cleanup_disk().unwrap_or_else(|e| {
+                        debug!("Failed to cleanup BTRFS disk: {}", e);
+                    });
+                }
+
+                // Remove project from config and filesystem
+                self.state.config.remove_project(&args.name)?;
+
+                // If this was the default project, unset it
+                if let Some(ref default) = self.state.config.default_project {
+                    if default == &args.name {
+                        debug!("Removing deleted project as default project");
+                        self.state.config.default_project = None;
+                        self.state.config.save_config();
+                    }
+                }
+
+                info!("Project {} deleted successfully", args.name);
+                Ok(())
             }
             Commands::Show(args) => {
                 info!("Showing details for branch project: {}", args.id);
