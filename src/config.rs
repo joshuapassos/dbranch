@@ -52,8 +52,7 @@ pub struct PostgresConfig {
 
 impl FolderConfig {
     pub fn from_env() -> Result<Self> {
-        let config_path = std::env::var("DBRANCH_CONFIG")
-            .unwrap_or(".config".to_string());
+        let config_path = std::env::var("DBRANCH_CONFIG").unwrap_or(".config".to_string());
         debug!("Loading folder config from path: {}", config_path);
         Ok(Self {
             path: config_path.parse()?,
@@ -63,17 +62,23 @@ impl FolderConfig {
 
 impl Config {
     pub fn get_valid_port(&self) -> Option<u16> {
-        debug!("Searching for available port in range {}-{}", self.port_range.0, self.port_range.1);
+        debug!(
+            "Searching for available port in range {}-{}",
+            self.port_range.0, self.port_range.1
+        );
         for port in self.port_range.0..=self.port_range.1 {
             match TcpListener::bind(("127.0.0.1", port)) {
                 Ok(_) => {
                     debug!("Found available port: {}", port);
                     return Some(port);
-                },
+                }
                 Err(_) => continue,
             }
         }
-        debug!("No available ports found in range {}-{}", self.port_range.0, self.port_range.1);
+        debug!(
+            "No available ports found in range {}-{}",
+            self.port_range.0, self.port_range.1
+        );
         None
     }
     pub fn from_env(path: &Path, c: FileConfigInfo) -> Result<Self, AppError> {
@@ -134,11 +139,11 @@ impl Config {
                 Ok(content) => {
                     debug!("Config file exists, reading content");
                     (false, content)
-                },
+                }
                 Err(_) => {
                     debug!("Config file doesn't exist, will create with defaults");
                     (true, "{}".to_string())
-                },
+                }
             };
 
         let json = serde_json::from_str::<FileConfigInfo>(json_string.as_str()).map_err(|e| {
@@ -216,6 +221,39 @@ impl Config {
         Ok(())
     }
 
+    pub fn get_project_info(&self, name: Option<String>) -> Option<Project> {
+        let project_name = match name {
+            Some(n) => n,
+            None => {
+                if self.default_project.is_none() {
+                    debug!("No default project set");
+                    return None;
+                }
+                self.default_project.as_ref().unwrap().clone()
+            }
+        };
+
+        let project_path = self.path.join(project_name);
+        let metadata_path = project_path.join("metadata.json");
+
+        debug!("Looking for metadata file at: {:?}", metadata_path);
+
+        let metadata_content = fs::read_to_string(&metadata_path).ok()?;
+        let project: Project = serde_json::from_str(&metadata_content).ok()?;
+        debug!(
+            "Project info retrieved successfully for: {}",
+            self.default_project.as_ref().unwrap()
+        );
+        Some(project)
+    }
+
+    pub fn get_projects(&self) -> Vec<Project> {
+        self.projects
+            .iter()
+            .filter_map(|name| self.get_project_info(Some(name.clone())))
+            .collect()
+    }
+
     pub fn add_project(&mut self, project: Project) {
         info!("Adding new project: {}", project.name);
         debug!("Project path: {:?}", project.path);
@@ -229,7 +267,7 @@ impl Config {
     fn create_project(&self, project: Project) -> Result<(), AppError> {
         let project_dir = Path::new(&self.path).join(project.name.clone());
         debug!("Creating project directory: {:?}", project_dir);
-        
+
         match fs::create_dir(&project_dir) {
             Ok(_) => {
                 info!("Project directory created successfully.");
@@ -246,9 +284,8 @@ impl Config {
             .join(project.name.clone())
             .join("metadata.json");
         debug!("Creating metadata file: {:?}", metadata_path);
-        
-        let metadata = File::create(metadata_path)
-        .map_err(|e| AppError::Internal {
+
+        let metadata = File::create(metadata_path).map_err(|e| AppError::Internal {
             message: format!("Failed to create metadata file: {}", e),
         })?;
 

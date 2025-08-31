@@ -94,6 +94,8 @@ pub struct Branch {
 pub struct Project {
     pub name: String,
     pub path: PathBuf,
+    pub active_branch: Option<String>,
+    pub port: u16,
     pub created_at: DateTime<Utc>,
     pub branches: Vec<String>,
 }
@@ -147,9 +149,19 @@ impl CliHandler {
                     });
                 }
 
+                let valid_port = self
+                    .state
+                    .config
+                    .get_valid_port()
+                    .ok_or(AppError::Internal {
+                        message: "No available port found in the specified range".into(),
+                    })?;
+
                 let project = Project {
                     name: args.name.clone(),
                     path: Path::new(&self.state.config.path.clone()).join(args.name.clone()),
+                    active_branch: None,
+                    port: valid_port,
                     created_at: Utc::now(),
                     branches: Vec::new(),
                 };
@@ -184,13 +196,7 @@ impl CliHandler {
                         "Finding available port in range {:?}",
                         self.state.config.port_range
                     );
-                    let valid_port =
-                        self.state
-                            .config
-                            .get_valid_port()
-                            .ok_or(AppError::Internal {
-                                message: "No available port found in the specified range".into(),
-                            })?;
+
                     info!("Found available port: {}", valid_port);
 
                     let db_name = format!("dbranch_{}", project.name.as_str());
