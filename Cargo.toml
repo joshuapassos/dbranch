@@ -1,0 +1,20 @@
+[package]
+name = "dbranch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.47.1", features = ["full"] }
+axum = { version = "0.8.4", features = ["macros"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.0", features = ["derive"] }
+tracing = "0.1.41"
+thiserror = "2.0.16"
+anyhow = "1.0.99"
+loopdev-3 = "0.5.2"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+uuid = { version = "1.18.0", features = ["v4"] }
+docker-wrapper = "0.8.2"
+regex = "1.11.2"
