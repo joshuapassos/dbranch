@@ -35,6 +35,8 @@ pub enum Commands {
     List,
     #[clap(about = "Delete a branch project")]
     Delete(DeleteArgs),
+    #[clap(about = "Delete a project")]
+    DeleteProject(DeleteProjectArgs),
     #[clap(about = "Show details of a branch project")]
     Show(ShowArgs),
 }
@@ -67,27 +69,20 @@ pub struct DeleteArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct DeleteProjectArgs {
+    name: String,
+}
+
+#[derive(Args, Debug)]
 pub struct ShowArgs {
     id: String,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub enum BranchStatus {
-    Active,
-    Inactive,
-    Starting,
-    Stopping,
-    Error,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct Branch {
-    pub id: String,
     pub name: String,
     pub port: u16,
-    pub size: u64,
-    pub is_main: bool,
-    pub status: BranchStatus,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -144,19 +139,17 @@ impl CliHandler {
 
                 if self.state.config.projects.contains(&args.name) {
                     debug!("Project {} already exists in config", args.name);
-                    return Err(AppError::ProjectAlreadyExists {
-                        name: args.name,
-                    });
+                    return Err(AppError::ProjectAlreadyExists { name: args.name });
                 }
 
-                let valid_port = self
-                    .state
-                    .config
-                    .get_valid_port()
-                    .ok_or(AppError::NoPortAvailable {
-                        min: self.state.config.port_range.0,
-                        max: self.state.config.port_range.1,
-                    })?;
+                let valid_port =
+                    self.state
+                        .config
+                        .get_valid_port()
+                        .ok_or(AppError::NoPortAvailable {
+                            min: self.state.config.port_range.0,
+                            max: self.state.config.port_range.1,
+                        })?;
 
                 let project = Project {
                     name: args.name.clone(),
@@ -237,9 +230,7 @@ impl CliHandler {
 
                 if self.state.config.projects.contains(&args.name) {
                     debug!("Project {} already exists", args.name);
-                    return Err(AppError::ProjectAlreadyExists {
-                        name: args.name,
-                    });
+                    return Err(AppError::ProjectAlreadyExists { name: args.name });
                 }
                 debug!("Create command processed (implementation pending)");
                 Ok(())
@@ -258,6 +249,13 @@ impl CliHandler {
                 debug!("Delete command not yet implemented");
                 Err(AppError::NotImplemented {
                     command: "delete".into(),
+                })
+            }
+            Commands::DeleteProject(args) => {
+                info!("Deleting project: {}", args.name);
+                debug!("DeleteProject command not yet implemented");
+                Err(AppError::NotImplemented {
+                    command: "delete_project".into(),
                 })
             }
             Commands::Show(args) => {

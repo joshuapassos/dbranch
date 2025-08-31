@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use docker_wrapper::{DockerCommand, NetworkCreateCommand, RunCommand};
+use docker_wrapper::{DockerCommand, NetworkCreateCommand, NetworkLsCommand, RunCommand};
 use tracing::{debug, info};
 
 use crate::{
@@ -45,13 +45,27 @@ impl DatabaseOperator for PostgresOperator {
         );
 
         debug!("Creating Docker network 'dbranch-network'");
-        let _ = NetworkCreateCommand::new("dbranch-network")
+
+        let net = NetworkLsCommand::new()
+            .filter("name", "dbranch-network")
             .execute()
             .await
             .map_err(|e| AppError::Docker {
-                message: format!("Failed to create Docker network: {}", e),
+                message: format!("Failed to list Docker networks: {}", e),
             })?;
-        debug!("Docker network created successfully");
+
+        if net.success && net.stdout.contains("dbranch-network") {
+            debug!("Docker network 'dbranch-network' already exists");
+        } else {
+            debug!("Docker network 'dbranch-network' does not exist, creating it");
+            let _ = NetworkCreateCommand::new("dbranch-network")
+                .execute()
+                .await
+                .map_err(|e| AppError::Docker {
+                    message: format!("Failed to create Docker network: {}", e),
+                })?;
+            debug!("Docker network created successfully");
+        }
 
         let volume_path = Path::new(config.mount_point.clone().as_str())
             .join(&name)
@@ -93,17 +107,6 @@ impl DatabaseOperator for PostgresOperator {
             )
             .env("PGDATA", "/var/lib/postgresql/data/pgdata")
             .restart("unless-stopped")
-            .health_cmd(format!(
-                "pg_isready -U {}",
-                config
-                    .postgres_config
-                    .database
-                    .or(Some("dbranch".into()))
-                    .unwrap()
-            ))
-            .health_interval("10s")
-            .health_timeout("5s")
-            .health_retries(5)
             .detach()
             .execute()
             .await
