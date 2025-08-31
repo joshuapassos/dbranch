@@ -68,7 +68,7 @@ impl BtrfsOperator {
         }
 
         // Prompt for password
-        print!("🔐 Para continuar, digite sua senha sudo: ");
+        print!("🔐 To continue, enter your sudo password: ");
         std::io::stdout().flush().map_err(|e| AppError::Internal {
             message: format!("Failed to flush stdout: {}", e),
         })?;
@@ -86,11 +86,11 @@ impl BtrfsOperator {
 
         if !validate_status.success() {
             return Err(AppError::Internal {
-                message: "Senha sudo incorreta ou acesso negado".to_string(),
+                message: "Incorrect sudo password or access denied".to_string(),
             });
         }
 
-        info!("Senha sudo validada com sucesso");
+        info!("Sudo password validated successfully");
         Ok(())
     }
 

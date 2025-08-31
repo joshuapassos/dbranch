@@ -70,14 +70,14 @@ async fn run_server(config: Config, project: Project) -> Result<(), error::AppEr
     let listener = TcpListener::bind(&bind_addr).await.unwrap();
 
     while let Ok((client, addr)) = listener.accept().await {
-        println!("🔗 Nova conexão de: {}", addr);
+        println!("🔗 New connection from: {}", addr);
 
         let target = format!("localhost:{}", project.port);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(client, &target).await {
-                println!("❌ Erro na conexão {}: {}", addr, e);
+                println!("❌ Connection error {}: {}", addr, e);
             } else {
-                println!("✅ Conexão {} finalizada", addr);
+                println!("✅ Connection {} finished", addr);
             }
         });
     }
