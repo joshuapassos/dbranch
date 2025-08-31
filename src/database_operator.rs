@@ -39,33 +39,44 @@ impl DatabaseOperator for PostgresOperator {
         port: u16,
         name: &str,
     ) -> Result<(), AppError> {
-        info!("Creating PostgreSQL database '{}' for project '{}' on port {}", name, project.name, port);
-        
+        info!(
+            "Creating PostgreSQL database '{}' for project '{}' on port {}",
+            name, project.name, port
+        );
+
         debug!("Creating Docker network 'dbranch-network'");
         let _ = NetworkCreateCommand::new("dbranch-network")
             .execute()
             .await
-            .unwrap();
+            .map_err(|e| AppError::Docker {
+                message: format!("Failed to create Docker network: {}", e),
+            })?;
         debug!("Docker network created successfully");
 
         let volume_path = Path::new(config.mount_point.clone().as_str())
             .join(&name)
             .to_string_lossy()
             .into_owned();
-        
-        debug!("Setting up PostgreSQL container with volume: {}", volume_path);
-        debug!("Container configuration: user={}, database={}", 
-               config.postgres_config.user,
-               config.postgres_config.database.as_ref().unwrap_or(&"dbranch".to_string()));
-        
+
+        debug!(
+            "Setting up PostgreSQL container with volume: {}",
+            volume_path
+        );
+        debug!(
+            "Container configuration: user={}, database={}",
+            config.postgres_config.user,
+            config
+                .postgres_config
+                .database
+                .as_ref()
+                .unwrap_or(&"dbranch".to_string())
+        );
+
         let output = RunCommand::new("postgres:17-alpine")
             .name(name)
             .port(port, 5432)
             .network("dbranch-network")
-            .volume(
-                volume_path,
-                "/var/lib/postgresql/data",
-            )
+            .volume(volume_path, "/var/lib/postgresql/data")
             .env("POSTGRES_USER", config.postgres_config.user.as_str())
             .env(
                 "POSTGRES_PASSWORD",
@@ -76,6 +87,7 @@ impl DatabaseOperator for PostgresOperator {
                 config
                     .postgres_config
                     .database
+                    .clone()
                     .or(Some("dbranch".into()))
                     .unwrap(),
             )
@@ -83,7 +95,11 @@ impl DatabaseOperator for PostgresOperator {
             .restart("unless-stopped")
             .health_cmd(format!(
                 "pg_isready -U {}",
-                config.postgres_config.user.as_str()
+                config
+                    .postgres_config
+                    .database
+                    .or(Some("dbranch".into()))
+                    .unwrap()
             ))
             .health_interval("10s")
             .health_timeout("5s")
@@ -92,30 +108,42 @@ impl DatabaseOperator for PostgresOperator {
             .execute()
             .await
             .unwrap();
-        
-        info!("PostgreSQL container '{}' created successfully on port {}", name, port);
+
+        info!(
+            "PostgreSQL container '{}' created successfully on port {}",
+            name, port
+        );
 
         Ok(())
     }
 
     async fn delete_database(&self, project: Project, name: &str) -> Result<(), AppError> {
-        info!("Deleting PostgreSQL database '{}' for project '{}'", name, project.name);
+        info!(
+            "Deleting PostgreSQL database '{}' for project '{}'",
+            name, project.name
+        );
         debug!("Delete operation not yet implemented");
         // TODO: Implement PostgreSQL database deletion logic here
         Ok(())
     }
 
     async fn list_databases(&self, project: Project) -> Result<Vec<Branch>, AppError> {
-        debug!("Listing PostgreSQL databases for project '{}'", project.name);
+        debug!(
+            "Listing PostgreSQL databases for project '{}'",
+            project.name
+        );
         // TODO: Implement logic to list PostgreSQL databases here
         Ok(vec![])
     }
 
     async fn get_database_info(&self, project: Project, name: &str) -> Result<Branch, AppError> {
-        debug!("Getting database info for '{}' in project '{}'", name, project.name);
+        debug!(
+            "Getting database info for '{}' in project '{}'",
+            name, project.name
+        );
         // TODO: Implement logic to get information about a specific PostgreSQL database here
-        Err(AppError::Internal {
-            message: "Not implemented".into(),
+        Err(AppError::NotImplemented {
+            command: "get_database_info".into(),
         })
     }
 }

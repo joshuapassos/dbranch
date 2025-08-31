@@ -117,7 +117,7 @@ impl Config {
             projects: c.projects.unwrap_or(vec![]),
             postgres_config: c.postgres_config.unwrap_or(PostgresConfig {
                 user: "dbranch_user".into(),
-                password: "dbbranch_pass".into(),
+                password: "dbranch_pass".into(),
                 database: None,
             }),
             default_project: std::env::var("DBRANCH_DEFAULT_PROJECT")
@@ -147,20 +147,20 @@ impl Config {
             };
 
         let json = serde_json::from_str::<FileConfigInfo>(json_string.as_str()).map_err(|e| {
-            AppError::Internal {
+            AppError::ConfigParsing {
                 message: format!("Failed to parse config file {}", e),
             }
         });
 
         let parsed_config = json
             .and_then(|op| Config::from_env(Path::new(&folder_config.path), op))
-            .map_err(|e| AppError::Internal {
+            .map_err(|e| AppError::Config {
                 message: format!("Failed to read config file: {}", e),
             });
 
         if needs_create {
             info!("Creating new config file at {:?}", file_config);
-            let file = File::create(file_config.clone()).map_err(|e| AppError::Internal {
+            let file = File::create(file_config.clone()).map_err(|e| AppError::FileSystem {
                 message: format!(
                     "Failed to create config file {:?}: {}",
                     file_config.as_os_str(),
@@ -168,33 +168,25 @@ impl Config {
                 ),
             })?;
 
+            let c = parsed_config.as_ref().unwrap();
+
             let obj = FileConfigInfo {
-                api_port: Some(parsed_config.as_ref().unwrap().api_port),
-                proxy_port: Some(parsed_config.as_ref().unwrap().proxy_port),
-                port_min: Some((parsed_config.as_ref().unwrap().port_range).0),
-                port_max: Some((parsed_config.as_ref().unwrap().port_range).1),
-                mount_point: Some(parsed_config.as_ref().unwrap().mount_point.clone()),
-                default_project: parsed_config.as_ref().unwrap().default_project.clone(),
+                api_port: Some(c.api_port),
+                proxy_port: Some(c.proxy_port),
+                port_min: Some((c.port_range).0),
+                port_max: Some((c.port_range).1),
+                mount_point: Some(c.mount_point.clone()),
+                default_project: c.default_project.clone(),
                 postgres_config: Some(PostgresConfig {
-                    user: parsed_config.as_ref().unwrap().postgres_config.user.clone(),
-                    password: parsed_config
-                        .as_ref()
-                        .unwrap()
-                        .postgres_config
-                        .password
-                        .clone(),
-                    database: parsed_config
-                        .as_ref()
-                        .unwrap()
-                        .postgres_config
-                        .database
-                        .clone(),
+                    user: c.postgres_config.user.clone(),
+                    password: c.postgres_config.password.clone(),
+                    database: c.postgres_config.database.clone(),
                 }),
                 projects: Some(vec![]),
             };
 
             let mut writer = BufWriter::new(file);
-            serde_json::to_writer_pretty(&mut writer, &obj).map_err(|e| AppError::Internal {
+            serde_json::to_writer_pretty(&mut writer, &obj).map_err(|e| AppError::FileSystem {
                 message: format!("Failed to write config file {:?}: {}", file_config, e),
             })?;
             info!("Config file created successfully");
@@ -207,10 +199,10 @@ impl Config {
 
     pub fn set_default_project(&mut self, project: String) -> Result<(), AppError> {
         debug!("Setting default project to: {}", project);
-        if self.projects.iter().find(|&p| p == &project).is_none() {
+        if !self.projects.iter().any(|p| p == &project) {
             debug!("Project {} not found in project list", project);
-            return Err(AppError::Internal {
-                message: format!("Project {} does not exist", project),
+            return Err(AppError::ProjectNotFound {
+                name: project,
             });
         }
 
@@ -285,12 +277,12 @@ impl Config {
             .join("metadata.json");
         debug!("Creating metadata file: {:?}", metadata_path);
 
-        let metadata = File::create(metadata_path).map_err(|e| AppError::Internal {
+        let metadata = File::create(metadata_path).map_err(|e| AppError::FileSystem {
             message: format!("Failed to create metadata file: {}", e),
         })?;
 
         let mut writer = BufWriter::new(metadata);
-        serde_json::to_writer_pretty(&mut writer, &project).map_err(|e| AppError::Internal {
+        serde_json::to_writer_pretty(&mut writer, &project).map_err(|e| AppError::FileSystem {
             message: format!("Failed to write metadata file: {}", e),
         })?;
         debug!("Metadata file written successfully");
@@ -301,7 +293,7 @@ impl Config {
     pub fn save_config(&self) {
         debug!("Saving configuration to {:?}", self.config_path);
         let file: File = File::create(self.config_path.clone())
-            .map_err(|e| AppError::Internal {
+            .map_err(|e| AppError::FileSystem {
                 message: format!("Failed to create config file {:?}: {}", self.config_path, e),
             })
             .unwrap();
@@ -323,7 +315,7 @@ impl Config {
 
         let mut writer = BufWriter::new(file);
         serde_json::to_writer_pretty(&mut writer, &obj)
-            .map_err(|e| AppError::Internal {
+            .map_err(|e| AppError::FileSystem {
                 message: format!("Failed to write config file {:?}: {}", self.path, e),
             })
             .unwrap();

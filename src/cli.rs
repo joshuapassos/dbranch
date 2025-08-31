@@ -134,8 +134,8 @@ impl CliHandler {
             Commands::List => {
                 info!("Listing all branch projects");
                 debug!("Total projects: {}", self.state.projects.len());
-                Err(AppError::Internal {
-                    message: "List command not implemented".into(),
+                Err(AppError::NotImplemented {
+                    command: "list".into(),
                 })
             }
             Commands::Init(args) => {
@@ -144,8 +144,8 @@ impl CliHandler {
 
                 if self.state.config.projects.contains(&args.name) {
                     debug!("Project {} already exists in config", args.name);
-                    return Err(AppError::Internal {
-                        message: format!("Project {} already exists", args.name),
+                    return Err(AppError::ProjectAlreadyExists {
+                        name: args.name,
                     });
                 }
 
@@ -153,8 +153,9 @@ impl CliHandler {
                     .state
                     .config
                     .get_valid_port()
-                    .ok_or(AppError::Internal {
-                        message: "No available port found in the specified range".into(),
+                    .ok_or(AppError::NoPortAvailable {
+                        min: self.state.config.port_range.0,
+                        max: self.state.config.port_range.1,
                     })?;
 
                 let project = Project {
@@ -236,8 +237,8 @@ impl CliHandler {
 
                 if self.state.config.projects.contains(&args.name) {
                     debug!("Project {} already exists", args.name);
-                    return Err(AppError::Internal {
-                        message: format!("Project {} already exists", args.name),
+                    return Err(AppError::ProjectAlreadyExists {
+                        name: args.name,
                     });
                 }
                 debug!("Create command processed (implementation pending)");
@@ -255,15 +256,15 @@ impl CliHandler {
             Commands::Delete(args) => {
                 info!("Deleting branch project: {}", args.id);
                 debug!("Delete command not yet implemented");
-                Err(AppError::Internal {
-                    message: format!("Delete command not implemented: {}", args.id),
+                Err(AppError::NotImplemented {
+                    command: "delete".into(),
                 })
             }
             Commands::Show(args) => {
                 info!("Showing details for branch project: {}", args.id);
                 debug!("Show command not yet implemented");
-                Err(AppError::Internal {
-                    message: format!("Show command not implemented: {}", args.id),
+                Err(AppError::NotImplemented {
+                    command: "show".into(),
                 })
             }
         }

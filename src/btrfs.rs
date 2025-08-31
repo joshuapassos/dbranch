@@ -58,7 +58,7 @@ impl BtrfsOperator {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .output()
-            .map_err(|e| error::AppError::Internal {
+            .map_err(|e| error::AppError::Permission {
                 message: format!("Failed to check sudo status: {}", e),
             })?;
 
@@ -80,12 +80,12 @@ impl BtrfsOperator {
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit())
             .status()
-            .map_err(|e| AppError::Internal {
+            .map_err(|e| AppError::Auth {
                 message: format!("Failed to validate sudo password: {}", e),
             })?;
 
         if !validate_status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::Auth {
                 message: "Incorrect sudo password or access denied".to_string(),
             });
         }
@@ -143,7 +143,7 @@ impl BtrfsOperator {
             .unwrap();
 
         if !output.status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::DiskMount {
                 message: format!(
                     "Failed to create loop device: {}",
                     String::from_utf8_lossy(&output.stderr)
@@ -161,7 +161,7 @@ impl BtrfsOperator {
             .unwrap();
 
         if !output.status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::Btrfs {
                 message: format!(
                     "Failed to format loop device as Btrfs: {}",
                     String::from_utf8_lossy(&output.stderr)
@@ -176,7 +176,7 @@ impl BtrfsOperator {
             .unwrap();
 
         if !output.status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::FileSystem {
                 message: format!(
                     "Failed to create mount point directory: {}",
                     String::from_utf8_lossy(&output.stderr)
@@ -192,7 +192,7 @@ impl BtrfsOperator {
             .unwrap();
 
         if !output.status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::DiskMount {
                 message: format!(
                     "Failed to mount loop device: {}",
                     String::from_utf8_lossy(&output.stderr)
@@ -220,7 +220,7 @@ impl BtrfsOperator {
             {
                 debug!("Disk already unmounted, continuing...");
             } else {
-                return Err(AppError::Internal {
+                return Err(AppError::DiskMount {
                     message: format!(
                         "Failed to unmount loop device: {}",
                         String::from_utf8_lossy(&output.stderr)
@@ -235,9 +235,9 @@ impl BtrfsOperator {
             .output()
             .unwrap();
         if !output.status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::DiskMount {
                 message: format!(
-                    "Failed to unmount loop device: {}",
+                    "Failed to list loop devices: {}",
                     String::from_utf8_lossy(&output.stderr)
                 ),
             });
@@ -255,7 +255,7 @@ impl BtrfsOperator {
             .output()
             .unwrap();
         if !output.status.success() {
-            return Err(AppError::Internal {
+            return Err(AppError::DiskMount {
                 message: format!(
                     "Failed to detach loop device: {}",
                     String::from_utf8_lossy(&output.stderr)
