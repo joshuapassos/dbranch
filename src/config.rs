@@ -295,7 +295,12 @@ impl Config {
         Ok(())
     }
 
-    pub fn create_branch(&self, project_name: String, branch_name: String) -> Result<(), AppError> {
+    pub fn create_branch(
+        &self,
+        project_name: String,
+        branch_name: String,
+        valid_port: u16,
+    ) -> Result<(), AppError> {
         let project_path = self.path.join(project_name);
         let metadata_path = project_path.join("metadata.json");
 
@@ -306,7 +311,7 @@ impl Config {
 
         project.branches.push(Branch {
             name: branch_name,
-            port: self.get_valid_port().unwrap(),
+            port: valid_port,
             created_at: Utc::now(),
         });
 
@@ -364,6 +369,31 @@ impl Config {
         debug!("Metadata file updated successfully");
 
         Ok(())
+    }
+
+    pub fn set_active_branch(
+        &self,
+        project_name: String,
+        branch_name: String,
+    ) -> Result<(), AppError> {
+        let project_path = self.path.join(project_name);
+        let metadata_path = project_path.join("metadata.json");
+
+        debug!("Looking for metadata file at: {:?}", metadata_path);
+
+        let metadata_content = fs::read_to_string(&metadata_path).ok().unwrap();
+        let mut project: Project = serde_json::from_str(&metadata_content).ok().unwrap();
+
+        if project.branches.iter().any(|b| b.name == branch_name) || branch_name == "main" {
+            project.active_branch = if branch_name == "main" {
+                None
+            } else {
+                Some(branch_name)
+            };
+            return self.save_project_changes(&project);
+        } else {
+            Err(AppError::BranchNotFound { name: branch_name })
+        }
     }
 
     pub fn save_config(&self) {

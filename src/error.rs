@@ -29,6 +29,9 @@ pub enum AppError {
     #[error("Project '{name}' not found")]
     ProjectNotFound { name: String },
 
+    #[error("Branch '{name}' not found")]
+    BranchNotFound { name: String },
+
     #[error("Default Project not found")]
     DefaultProjectNotFound,
 

@@ -41,6 +41,8 @@ pub enum Commands {
     Show(ShowArgs),
     #[clap(about = "Show the status of a project")]
     Status,
+    #[clap(about = "Use a specific branch")]
+    Use(UseArgs),
 }
 
 #[derive(Args, Debug)]
@@ -72,6 +74,11 @@ pub struct DeleteArgs {
 
 #[derive(Args, Debug)]
 pub struct DeleteProjectArgs {
+    name: String,
+}
+
+#[derive(Args, Debug)]
+pub struct UseArgs {
     name: String,
 }
 
@@ -191,31 +198,8 @@ impl CliHandler {
                     info!("Project '{}' initialized with main subvolume", args.name);
                 }
 
-                // Create Postgres
-                {
-                    debug!("Initializing PostgreSQL database creation");
-                    let postgres_operator = PostgresOperator::new();
-
-                    debug!(
-                        "Finding available port in range {:?}",
-                        self.state.config.port_range
-                    );
-
-                    info!("Found available port: {}", valid_port);
-
-                    let db_name = format!("{}", project.name.as_str());
-                    debug!("Creating PostgreSQL database: {}", db_name);
-                    postgres_operator
-                        .create_database(
-                            project.clone(),
-                            self.state.config.clone(),
-                            valid_port,
-                            db_name.as_str(),
-                        )
-                        .await
-                        .unwrap();
-                    info!("PostgreSQL database created successfully");
-                }
+                // Create PostgreSQL database
+                self.create_postgres(None, valid_port, &project).await;
 
                 debug!("Adding project to configuration");
                 self.state.config.add_project(project);
@@ -263,11 +247,22 @@ impl CliHandler {
 
                 btrfs_operator.create_snapshot(&args.name).unwrap();
 
+                let valid_port = self.state.config.get_valid_port().unwrap();
+
+                // Create PostgreSQL database
+                self.create_postgres(
+                    Some(args.name.clone()),
+                    valid_port,
+                    &self.state.active_project.clone().unwrap(),
+                )
+                .await;
+
                 self.state
                     .config
                     .create_branch(
                         self.state.active_project.clone().unwrap().name,
                         args.name.clone(),
+                        valid_port,
                     )
                     .unwrap();
 
@@ -357,6 +352,37 @@ impl CliHandler {
                     command: "show".into(),
                 })
             }
+            Commands::Use(args) => {
+                info!("Switching to branch: {}", args.name);
+
+                let project = self
+                    .state
+                    .config
+                    .get_project_info(None)
+                    .ok_or_else(|| AppError::DefaultProjectNotFound)?;
+
+                debug!("Active project found: {}", project.name);
+
+                if project
+                    .branches
+                    .iter()
+                    .map(|b| b.name.clone())
+                    .find(|name| *name == args.name)
+                    .is_none()
+                    && args.name != "main"
+                {
+                    debug!("Branch {} not found in active project", args.name);
+                    return Err(AppError::BranchNotFound { name: args.name });
+                }
+
+                self.state
+                    .config
+                    .set_active_branch(project.name.clone(), args.name.clone())
+                    .unwrap();
+
+                info!("Switched to branch: {} successfully", args.name);
+                Ok(())
+            }
             Commands::Status => {
                 info!("Showing status of the active project");
 
@@ -382,5 +408,27 @@ impl CliHandler {
                 Ok(())
             }
         }
+    }
+
+    async fn create_postgres(&mut self, name: Option<String>, valid_port: u16, project: &Project) {
+        debug!("Initializing PostgreSQL database creation");
+        let postgres_operator = PostgresOperator::new();
+        debug!(
+            "Finding available port in range {:?}",
+            self.state.config.port_range
+        );
+        info!("Found available port: {}", valid_port);
+        let db_name = name.unwrap_or_else(|| project.name.clone());
+        debug!("Creating PostgreSQL database: {}", db_name);
+        postgres_operator
+            .create_database(
+                project.clone(),
+                self.state.config.clone(),
+                valid_port,
+                db_name.as_str(),
+            )
+            .await
+            .unwrap();
+        info!("PostgreSQL database created successfully");
     }
 }

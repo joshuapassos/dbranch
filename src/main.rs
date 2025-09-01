@@ -67,12 +67,38 @@ async fn run_server(config: Config, project: Project) -> Result<(), error::AppEr
     let bind_addr = format!("0.0.0.0:{}", config.proxy_port);
     info!("🚀 Proxy PostgreSQL starting...");
     info!("📡 Listening on: {}", bind_addr);
+    println!(
+        "🔄 ({}) Forwarding to branch '{}'",
+        project.name,
+        project.active_branch.clone().unwrap_or("main".to_string())
+    );
+    println!("🚀 Proxy PostgreSQL starting...");
+    println!("📡 Listening on: {}", bind_addr);
     let listener = TcpListener::bind(&bind_addr).await.unwrap();
 
     while let Ok((client, addr)) = listener.accept().await {
         println!("🔗 New connection from: {}", addr);
 
-        let target = format!("localhost:{}", project.port);
+        let target_port = match &project.active_branch {
+            Some(branch_name) => {
+                println!(
+                    "🔄 ({}) Forwarding to branch '{}'",
+                    project.name, branch_name
+                );
+                project
+                    .branches
+                    .iter()
+                    .find(|b| b.name == *branch_name)
+                    .map(|b| b.port)
+                    .unwrap()
+            }
+            None => {
+                println!("🔄 ({}) Forwarding to branch 'main'", project.name);
+                project.port
+            }
+        };
+
+        let target = format!("localhost:{}", target_port);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(client, &target).await {
                 println!("❌ Connection error {}: {}", addr, e);
