@@ -94,7 +94,7 @@ pub struct Project {
     pub active_branch: Option<String>,
     pub port: u16,
     pub created_at: DateTime<Utc>,
-    pub branches: Vec<String>,
+    pub branches: Vec<Branch>,
 }
 
 pub struct AppState {
@@ -163,21 +163,32 @@ impl CliHandler {
                 };
                 debug!("Creating project at path: {:?}", project.path);
 
-                // Mount disk
+                // Initialize individual BTRFS filesystem for this project
                 {
-                    debug!("Initializing BTRFS disk mount process");
+                    debug!(
+                        "Initializing individual BTRFS filesystem for project: {}",
+                        args.name
+                    );
                     let mut btrfs_operator =
-                        btrfs::BtrfsOperator::new(project.path.clone(), self.state.config.clone());
+                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
 
                     debug!("Checking BTRFS installation");
                     btrfs_operator.check_btrfs().unwrap();
-                    debug!("Reserving disk space");
+
+                    debug!("Reserving disk space for project filesystem");
                     btrfs_operator.reserve_space().unwrap();
-                    debug!("Ensuring disk is unmounted before mounting");
-                    let _ = btrfs_operator.unmount_disk();
-                    debug!("Mounting BTRFS disk");
+
+                    debug!("Ensuring any existing mount is unmounted before mounting");
+                    let _ = btrfs_operator.unmount_disk(); // Ignore errors - might not be mounted
+
+                    debug!("Mounting project BTRFS filesystem");
                     btrfs_operator.mount_disk().unwrap();
-                    info!("BTRFS disk mounted successfully");
+                    info!(
+                        "Project BTRFS filesystem '{}' mounted successfully",
+                        args.name
+                    );
+
+                    info!("Project '{}' initialized with main subvolume", args.name);
                 }
 
                 // Create Postgres
@@ -192,7 +203,7 @@ impl CliHandler {
 
                     info!("Found available port: {}", valid_port);
 
-                    let db_name = format!("dbranch_{}", project.name.as_str());
+                    let db_name = format!("{}", project.name.as_str());
                     debug!("Creating PostgreSQL database: {}", db_name);
                     postgres_operator
                         .create_database(
@@ -222,7 +233,7 @@ impl CliHandler {
                 Ok(())
             }
             Commands::Create(args) => {
-                info!("Creating new branch project: {}", args.name);
+                info!("Creating new branch project: {}", args.name.clone());
                 if let Some(ref source) = args.source {
                     debug!("Creating from source: {}", source);
                 }
@@ -231,6 +242,35 @@ impl CliHandler {
                     debug!("Project {} already exists", args.name);
                     return Err(AppError::ProjectAlreadyExists { name: args.name });
                 }
+
+                if let Some(ref active) = self.state.active_project {
+                    if active
+                        .branches
+                        .iter()
+                        .map(|b| b.name.clone())
+                        .find(|name| *name == args.name)
+                        .is_some()
+                    {
+                        debug!("Branch {} already exists", args.name);
+                        return Err(AppError::BranchAlreadyExists { name: args.name });
+                    }
+                }
+
+                let btrfs_operator = btrfs::BtrfsOperator::new(
+                    self.state.active_project.clone().unwrap(),
+                    self.state.config.clone(),
+                );
+
+                btrfs_operator.create_snapshot(&args.name).unwrap();
+
+                self.state
+                    .config
+                    .create_branch(
+                        self.state.active_project.clone().unwrap().name,
+                        args.name.clone(),
+                    )
+                    .unwrap();
+
                 debug!("Create command processed (implementation pending)");
                 Ok(())
             }
@@ -273,18 +313,25 @@ impl CliHandler {
                     debug!("Deleting PostgreSQL container");
                     let postgres_operator = PostgresOperator::new();
                     postgres_operator
-                        .delete_database(project.clone(), &format!("dbranch_{}", project.name))
+                        .delete_database(project.clone(), &format!("{}", project.name))
                         .await?;
                 }
 
-                // Delete BTRFS disk and unmount
+                // Delete BTRFS filesystem
                 {
-                    debug!("Cleaning up BTRFS disk");
-                    let btrfs_operator =
-                        crate::btrfs::BtrfsOperator::new(project.path, self.state.config.clone());
+                    debug!("Cleaning up project BTRFS filesystem");
+                    let btrfs_operator = crate::btrfs::BtrfsOperator::new(
+                        project.clone(),
+                        self.state.config.clone(),
+                    );
+
+                    // Unmount and cleanup the entire project filesystem
+                    btrfs_operator.unmount_disk().unwrap_or_else(|e| {
+                        debug!("Failed to unmount BTRFS filesystem: {}", e);
+                    });
 
                     btrfs_operator.cleanup_disk().unwrap_or_else(|e| {
-                        debug!("Failed to cleanup BTRFS disk: {}", e);
+                        debug!("Failed to cleanup BTRFS filesystem: {}", e);
                     });
                 }
 

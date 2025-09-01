@@ -71,6 +71,8 @@ impl DatabaseOperator for PostgresOperator {
 
         let volume_path = Path::new(config.mount_point.clone().as_str())
             .join(&name)
+            .join("main")
+            .join("data")
             .to_string_lossy()
             .into_owned();
 

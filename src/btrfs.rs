@@ -1,3 +1,4 @@
+use crate::cli::Project;
 use crate::config::Config;
 use crate::error;
 use crate::error::AppError;
@@ -40,11 +41,15 @@ pub struct BtrfsOperator {
 }
 
 impl BtrfsOperator {
-    pub fn new(project_path: PathBuf, config: Config) -> Self {
+    pub fn new(project: Project, config: Config) -> Self {
+        let project_name = project.name.clone();
+
+        let project_mount_point = format!("{}/{}", config.mount_point, project_name);
+
         Self {
-            img_path: project_path.join("image.img"),
-            mount_point: config.mount_point,
-            size: 5 * 1024 * 1024 * 1024, // Default size: 5GB
+            img_path: project.path.join("btrfs.img"),
+            mount_point: project_mount_point.clone(),
+            size: 5 * 1024 * 1024 * 1024, // 5GB per project (adjustable)
         }
     }
 
@@ -197,7 +202,48 @@ impl BtrfsOperator {
             });
         }
 
-        info!("Successfully mounted disk at {}", self.mount_point);
+        debug!("Creating main subvolume after mount");
+        let main_subvolume = format!("{}/main", &self.mount_point);
+        let output = std::process::Command::new("sudo")
+            .args(&["btrfs", "subvolume", "create", &main_subvolume])
+            .output()
+            .unwrap();
+
+        if !output.status.success() {
+            return Err(AppError::Btrfs {
+                message: format!(
+                    "Failed to create main subvolume: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+        debug!("Main subvolume created successfully: {}", main_subvolume);
+
+        let data_dir = format!("{}/data", &main_subvolume);
+        debug!("Creating data directory: {}", data_dir);
+        let mkdir_output = std::process::Command::new("sudo")
+            .arg("mkdir")
+            .arg("-p")
+            .arg(&data_dir)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to create data directory: {}", e),
+            })?;
+
+        if !mkdir_output.status.success() {
+            return Err(AppError::FileSystem {
+                message: format!(
+                    "Failed to create data directory: stderr={} stdout={}",
+                    String::from_utf8_lossy(&mkdir_output.stderr),
+                    String::from_utf8_lossy(&mkdir_output.stdout)
+                ),
+            });
+        }
+
+        info!(
+            "Successfully mounted disk at {} with main subvolume",
+            self.mount_point
+        );
         Ok(())
     }
 
@@ -207,7 +253,8 @@ impl BtrfsOperator {
 
         debug!("Unmounting {}", self.mount_point);
         let output = std::process::Command::new("sudo")
-            .args(&["umount", self.mount_point.as_str()])
+            // It can cause btrfs filesystem corruption ~ https://stackoverflow.com/questions/7878707/how-to-unmount-a-busy-device
+            .args(&["umount", "-l", self.mount_point.as_str()])
             .output()
             .unwrap();
         if !output.status.success() {
@@ -283,6 +330,47 @@ impl BtrfsOperator {
         }
     }
 
+    pub fn cleanup_project_subvolume(&self, project_name: &str) -> Result<(), error::AppError> {
+        info!("Starting cleanup of project subvolume: {}", project_name);
+        Self::prompt_sudo_password().unwrap();
+
+        let subvolume_path = format!("{}/{}", &self.mount_point, project_name);
+
+        // Check if subvolume exists before trying to delete it
+        if !self.subvolume_exists(project_name)? {
+            debug!(
+                "Subvolume {} does not exist, skipping deletion",
+                project_name
+            );
+            return Ok(());
+        }
+
+        debug!("Deleting Btrfs subvolume: {}", subvolume_path);
+        let output = std::process::Command::new("sudo")
+            .arg("btrfs")
+            .arg("subvolume")
+            .arg("delete")
+            .arg(&subvolume_path)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to delete subvolume: {}", e),
+            })?;
+
+        if output.status.success() {
+            info!("Subvolume '{}' deleted successfully", project_name);
+            Ok(())
+        } else {
+            Err(AppError::FileSystem {
+                message: format!(
+                    "Failed to delete subvolume '{}': stderr={} stdout={}",
+                    project_name,
+                    String::from_utf8_lossy(&output.stderr),
+                    String::from_utf8_lossy(&output.stdout)
+                ),
+            })
+        }
+    }
+
     pub fn cleanup_disk(&self) -> Result<(), error::AppError> {
         info!("Starting disk cleanup process for {:?}", self.img_path);
 
@@ -319,19 +407,102 @@ impl BtrfsOperator {
         Ok(())
     }
 
-    // pub fn create_snapshot(&self, snapshot_name: &str) -> Result<(), String> {
-    //     let output = std::process::Command::new("btrfs")
-    //         .arg("subvolume")
-    //         .arg("snapshot")
-    //         .arg(self.mount_point.as_ref().unwrap())
-    //         .arg(snapshot_name)
-    //         .output()
-    //         .map_err(|e| e.to_string())?;
+    pub fn create_snapshot(&self, snapshot_name: &str) -> Result<(), error::AppError> {
+        debug!("Creating Btrfs snapshot: {}", snapshot_name);
+        Self::prompt_sudo_password().unwrap();
 
-    //     if output.status.success() {
-    //         Ok(())
-    //     } else {
-    //         Err(String::from_utf8_lossy(&output.stderr).into())
-    //     }
-    // }
+        // Source is always the main subvolume of this version
+        // TODO: change to snapshot from branches
+        let source_subvolume = format!("{}/main", &self.mount_point);
+
+        let target_snapshot = format!("{}/{}", &self.mount_point, snapshot_name);
+
+        if !self.subvolume_exists("main")? {
+            return Err(AppError::FileSystem {
+                message: "Main subvolume not found - project may not be properly initialized"
+                    .to_string(),
+            });
+        }
+
+        debug!(
+            "Running command: sudo btrfs subvolume snapshot {} {}",
+            source_subvolume, target_snapshot
+        );
+
+        let output = std::process::Command::new("sudo")
+            .arg("btrfs")
+            .arg("subvolume")
+            .arg("snapshot")
+            .arg(source_subvolume)
+            .arg(&target_snapshot)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to create Btrfs snapshot: {}", e),
+            })?;
+
+        if output.status.success() {
+            debug!("Btrfs snapshot created successfully: {}", snapshot_name);
+            info!("Snapshot '{}' created from main subvolume", snapshot_name);
+            Ok(())
+        } else {
+            Err(AppError::FileSystem {
+                message: format!(
+                    "Failed to create Btrfs snapshot: stderr={} stdout={}",
+                    String::from_utf8_lossy(&output.stderr),
+                    String::from_utf8_lossy(&output.stdout)
+                ),
+            })
+        }
+    }
+
+    fn subvolume_exists(&self, subvolume_name: &str) -> Result<bool, error::AppError> {
+        let subvolume_path = format!("{}/{}", &self.mount_point, subvolume_name);
+        debug!("Checking if subvolume exists: {}", subvolume_path);
+
+        let output = std::process::Command::new("sudo")
+            .arg("btrfs")
+            .arg("subvolume")
+            .arg("show")
+            .arg(&subvolume_path)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to check subvolume existence: {}", e),
+            })?;
+
+        Ok(output.status.success())
+    }
+
+    fn list_subvolumes(&self) -> Result<Vec<String>, error::AppError> {
+        debug!("Listing subvolumes in: {}", self.mount_point);
+
+        let output = std::process::Command::new("sudo")
+            .arg("btrfs")
+            .arg("subvolume")
+            .arg("list")
+            .arg(&self.mount_point)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to list subvolumes: {}", e),
+            })?;
+
+        if !output.status.success() {
+            return Err(AppError::FileSystem {
+                message: format!(
+                    "Failed to list subvolumes: stderr={}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let subvolumes: Vec<String> = stdout
+            .lines()
+            .filter_map(|line| {
+                // Parse btrfs subvolume list output: "ID xxx gen xxx path subvolume_name"
+                line.split_whitespace().last().map(|s| s.to_string())
+            })
+            .collect();
+
+        Ok(subvolumes)
+    }
 }

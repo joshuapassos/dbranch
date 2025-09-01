@@ -5,11 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-use crate::{cli::Project, error::AppError};
+use crate::{
+    cli::{Branch, Project},
+    error::AppError,
+};
 
 #[derive(Clone)]
 pub struct FolderConfig {
@@ -51,12 +54,12 @@ pub struct PostgresConfig {
 }
 
 impl FolderConfig {
-    pub fn from_env() -> Result<Self> {
+    pub fn from_env() -> Self {
         let config_path = std::env::var("DBRANCH_CONFIG").unwrap_or(".config".to_string());
         debug!("Loading folder config from path: {}", config_path);
-        Ok(Self {
-            path: config_path.parse()?,
-        })
+        Self {
+            path: config_path.parse().unwrap(),
+        }
     }
 }
 
@@ -129,7 +132,7 @@ impl Config {
 
     pub fn from_file() -> Result<Self, AppError> {
         debug!("Loading configuration from file");
-        let folder_config = FolderConfig::from_env().unwrap();
+        let folder_config = FolderConfig::from_env();
 
         let file_config = Path::new(&folder_config.path).join("dbranch.config.json");
         debug!("Config file path: {:?}", file_config);
@@ -201,9 +204,7 @@ impl Config {
         debug!("Setting default project to: {}", project);
         if !self.projects.iter().any(|p| p == &project) {
             debug!("Project {} not found in project list", project);
-            return Err(AppError::ProjectNotFound {
-                name: project,
-            });
+            return Err(AppError::ProjectNotFound { name: project });
         }
 
         self.default_project = Some(project.clone());
@@ -258,7 +259,7 @@ impl Config {
 
     pub fn remove_project(&mut self, name: &str) -> Result<(), AppError> {
         info!("Removing project: {}", name);
-        
+
         if !self.projects.contains(&name.to_string()) {
             debug!("Project {} not found in project list", name);
             return Err(AppError::ProjectNotFound {
@@ -273,7 +274,7 @@ impl Config {
         // Remove project directory
         let project_dir = self.path.join(name);
         debug!("Removing project directory: {:?}", project_dir);
-        
+
         if project_dir.exists() {
             match fs::remove_dir_all(&project_dir) {
                 Ok(_) => {
@@ -292,6 +293,24 @@ impl Config {
         self.save_config();
         info!("Project {} removed successfully", name);
         Ok(())
+    }
+
+    pub fn create_branch(&self, project_name: String, branch_name: String) -> Result<(), AppError> {
+        let project_path = self.path.join(project_name);
+        let metadata_path = project_path.join("metadata.json");
+
+        debug!("Looking for metadata file at: {:?}", metadata_path);
+
+        let metadata_content = fs::read_to_string(&metadata_path).ok().unwrap();
+        let mut project: Project = serde_json::from_str(&metadata_content).ok().unwrap();
+
+        project.branches.push(Branch {
+            name: branch_name,
+            port: self.get_valid_port().unwrap(),
+            created_at: Utc::now(),
+        });
+
+        return self.save_project_changes(&project);
     }
 
     fn create_project(&self, project: Project) -> Result<(), AppError> {
@@ -324,6 +343,25 @@ impl Config {
             message: format!("Failed to write metadata file: {}", e),
         })?;
         debug!("Metadata file written successfully");
+
+        Ok(())
+    }
+
+    fn save_project_changes(&self, project: &Project) -> Result<(), AppError> {
+        let metadata_path = Path::new(&self.path)
+            .join(project.name.clone())
+            .join("metadata.json");
+        debug!("Saving changes to metadata file: {:?}", metadata_path);
+
+        let metadata = File::create(metadata_path).map_err(|e| AppError::FileSystem {
+            message: format!("Failed to create metadata file: {}", e),
+        })?;
+
+        let mut writer = BufWriter::new(metadata);
+        serde_json::to_writer_pretty(&mut writer, &project).map_err(|e| AppError::FileSystem {
+            message: format!("Failed to write metadata file: {}", e),
+        })?;
+        debug!("Metadata file updated successfully");
 
         Ok(())
     }

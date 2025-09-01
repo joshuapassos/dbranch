@@ -23,6 +23,9 @@ pub enum AppError {
     #[error("Project '{name}' already exists")]
     ProjectAlreadyExists { name: String },
 
+    #[error("Branch '{name}' already exists")]
+    BranchAlreadyExists { name: String },
+
     #[error("Project '{name}' not found")]
     ProjectNotFound { name: String },
 
