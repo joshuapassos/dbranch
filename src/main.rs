@@ -4,9 +4,12 @@ mod config;
 mod database_operator;
 mod error;
 
+use std::sync::Arc;
+
 use crate::{
     cli::{AppState, Commands, Project},
     config::Config,
+    error::AppError,
 };
 use anyhow::Result;
 use clap::Parser;
@@ -14,6 +17,7 @@ use cli::Cli;
 use tokio::{
     io,
     net::{TcpListener, TcpStream},
+    sync::RwLock,
 };
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -33,16 +37,25 @@ async fn main() {
     info!("🌿 dBranch - PostgreSQL Database Branching System");
 
     debug!("Loading configuration from file...");
-    let config = Config::from_file().unwrap();
-    info!("Configuration loaded successfully");
 
-    let project = config.get_project_info(config.default_project.clone());
+    let config = Arc::new(RwLock::new(Config::from_file().unwrap()));
+
+    let project = Arc::new(RwLock::new(
+        config
+            .read()
+            .await
+            .get_project_info(config.read().await.default_project.clone()),
+    ));
+
+    tokio::spawn(sync_config(config.clone(), project.clone()));
+
+    info!("Configuration loaded successfully");
 
     debug!("Creating CLI handler with initial state");
     let mut cli_handler = cli::CliHandler::new(AppState {
-        config: config.clone(),
-        active_project: project.clone(),
-        projects: config.get_projects(),
+        config: config.read().await.clone(),
+        active_project: project.read().await.clone(),
+        projects: config.read().await.get_projects(),
     });
     debug!("CLI handler initialized");
 
@@ -51,7 +64,7 @@ async fn main() {
         Commands::Start => {
             info!("Starting dBranch service...");
             debug!("Initializing server components");
-            run_server(config, project.unwrap()).await.unwrap();
+            run_server(config, project).await.unwrap();
             info!("dBranch service started successfully");
         }
         cmd => {
@@ -62,15 +75,49 @@ async fn main() {
     }
 }
 
-async fn run_server(config: Config, project: Project) -> Result<(), error::AppError> {
+async fn sync_config(config: Arc<RwLock<Config>>, project: Arc<RwLock<Option<Project>>>) {
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        match Config::from_file() {
+            Ok(new_config) => {
+                config.write().await.clone_from(&new_config);
+                *project.write().await =
+                    new_config.get_project_info(new_config.default_project.clone());
+            }
+            Err(e) => {
+                AppError::Internal {
+                    message: format!("Failed to reload configuration: {}", e),
+                };
+            }
+        }
+    }
+}
+
+async fn run_server(
+    config: Arc<RwLock<Config>>,
+    project: Arc<RwLock<Option<Project>>>,
+) -> Result<(), error::AppError> {
+    if project.read().await.is_none() {
+        return Err(AppError::Internal {
+            message: "No active project found.".to_string(),
+        });
+    }
+
     debug!("Server startup initiated");
-    let bind_addr = format!("0.0.0.0:{}", config.proxy_port);
+    let bind_addr = format!("0.0.0.0:{}", config.read().await.proxy_port);
     info!("🚀 Proxy PostgreSQL starting...");
     info!("📡 Listening on: {}", bind_addr);
     println!(
         "🔄 ({}) Forwarding to branch '{}'",
-        project.name,
-        project.active_branch.clone().unwrap_or("main".to_string())
+        project.read().await.clone().unwrap().name,
+        project
+            .read()
+            .await
+            .clone()
+            .unwrap()
+            .active_branch
+            .clone()
+            .unwrap_or("main".to_string())
     );
     println!("🚀 Proxy PostgreSQL starting...");
     println!("📡 Listening on: {}", bind_addr);
@@ -79,13 +126,18 @@ async fn run_server(config: Config, project: Project) -> Result<(), error::AppEr
     while let Ok((client, addr)) = listener.accept().await {
         println!("🔗 New connection from: {}", addr);
 
-        let target_port = match &project.active_branch {
+        let target_port = match &project.read().await.clone().unwrap().active_branch {
             Some(branch_name) => {
                 println!(
                     "🔄 ({}) Forwarding to branch '{}'",
-                    project.name, branch_name
+                    project.read().await.clone().unwrap().name,
+                    branch_name
                 );
                 project
+                    .read()
+                    .await
+                    .clone()
+                    .unwrap()
                     .branches
                     .iter()
                     .find(|b| b.name == *branch_name)
@@ -93,8 +145,11 @@ async fn run_server(config: Config, project: Project) -> Result<(), error::AppEr
                     .unwrap()
             }
             None => {
-                println!("🔄 ({}) Forwarding to branch 'main'", project.name);
-                project.port
+                println!(
+                    "🔄 ({}) Forwarding to branch 'main'",
+                    project.read().await.clone().unwrap().name
+                );
+                project.read().await.clone().unwrap().port
             }
         };
 
