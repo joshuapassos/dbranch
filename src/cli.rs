@@ -427,19 +427,17 @@ impl CliHandler {
                 for project in &self.state.projects {
                     debug!("Stopping containers for project: {}", project.name);
 
-                    // Stop main project container
                     let postgres_operator = PostgresOperator::new();
-                    let _ = postgres_operator
-                        .stop_database(project.clone(), &project.name)
-                        .await;
 
-                    // Stop all branch containers
                     for branch in &project.branches {
                         debug!("Stopping branch container: {}", branch.name);
                         let _ = postgres_operator
                             .stop_database(project.clone(), &branch.name)
                             .await;
                     }
+                    let _ = postgres_operator
+                        .stop_database(project.clone(), &project.name)
+                        .await;
 
                     // Unmount BTRFS filesystem
                     debug!("Unmounting BTRFS filesystem for project: {}", project.name);
