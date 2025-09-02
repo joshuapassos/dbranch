@@ -43,6 +43,12 @@ pub enum Commands {
     Status,
     #[clap(about = "Use a specific branch")]
     Use(UseArgs),
+    #[clap(about = "Stop all branches and containers")]
+    Stop,
+    #[clap(about = "Resume stopped branches and containers")]
+    Resume,
+    #[clap(about = "Restart the dBranch system after reboot")]
+    Restart,
 }
 
 #[derive(Args, Debug)]
@@ -303,10 +309,22 @@ impl CliHandler {
 
                 debug!("Found project to delete: {:?}", project);
 
+                let btrfs_operator =
+                    crate::btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
+
+                let postgres_operator = PostgresOperator::new();
+
+                for branch in project.clone().branches {
+                    debug!("Deleting branch: {}", branch.name);
+
+                    postgres_operator
+                        .delete_database(project.clone(), &format!("{}", branch.name))
+                        .await?;
+                }
+
                 // Delete PostgreSQL container
                 {
                     debug!("Deleting PostgreSQL container");
-                    let postgres_operator = PostgresOperator::new();
                     postgres_operator
                         .delete_database(project.clone(), &format!("{}", project.name))
                         .await?;
@@ -315,10 +333,6 @@ impl CliHandler {
                 // Delete BTRFS filesystem
                 {
                     debug!("Cleaning up project BTRFS filesystem");
-                    let btrfs_operator = crate::btrfs::BtrfsOperator::new(
-                        project.clone(),
-                        self.state.config.clone(),
-                    );
 
                     // Unmount and cleanup the entire project filesystem
                     btrfs_operator.unmount_disk().unwrap_or_else(|e| {
@@ -405,6 +419,146 @@ impl CliHandler {
                         .unwrap_or("No active branch 🆓")
                 );
                 println!("{}", String::from("-").repeat(60));
+                Ok(())
+            }
+            Commands::Stop => {
+                info!("Stopping all branches and containers");
+
+                for project in &self.state.projects {
+                    debug!("Stopping containers for project: {}", project.name);
+
+                    // Stop main project container
+                    let postgres_operator = PostgresOperator::new();
+                    let _ = postgres_operator
+                        .stop_database(project.clone(), &project.name)
+                        .await;
+
+                    // Stop all branch containers
+                    for branch in &project.branches {
+                        debug!("Stopping branch container: {}", branch.name);
+                        let _ = postgres_operator
+                            .stop_database(project.clone(), &branch.name)
+                            .await;
+                    }
+
+                    // Unmount BTRFS filesystem
+                    debug!("Unmounting BTRFS filesystem for project: {}", project.name);
+                    let btrfs_operator =
+                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
+                    let _ = btrfs_operator.unmount_disk();
+                }
+
+                info!("All branches and containers stopped successfully");
+                Ok(())
+            }
+            Commands::Resume => {
+                info!("Resuming stopped branches and containers");
+
+                for project in &self.state.projects {
+                    debug!("Resuming project: {}", project.name);
+
+                    // Mount BTRFS filesystem
+                    let mut btrfs_operator =
+                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
+                    if let Err(e) = btrfs_operator.mount_disk() {
+                        debug!("Failed to mount BTRFS for project {}: {}", project.name, e);
+                        continue;
+                    }
+
+                    // Start main project container
+                    let postgres_operator = PostgresOperator::new();
+                    let _ = postgres_operator
+                        .create_database(
+                            project.clone(),
+                            self.state.config.clone(),
+                            project.port,
+                            &project.name,
+                        )
+                        .await;
+
+                    // Start all branch containers
+                    for branch in &project.branches {
+                        debug!("Starting branch container: {}", branch.name);
+                        let _ = postgres_operator
+                            .create_database(
+                                project.clone(),
+                                self.state.config.clone(),
+                                branch.port,
+                                &branch.name,
+                            )
+                            .await;
+                    }
+                }
+
+                info!("All branches and containers resumed successfully");
+                Ok(())
+            }
+            Commands::Restart => {
+                info!("Restarting dBranch system after reboot");
+
+                // Stop all containers and unmount filesystems
+                for project in &self.state.projects {
+                    debug!("Stopping containers for project: {}", project.name);
+
+                    // Stop main project container
+                    let postgres_operator = PostgresOperator::new();
+                    let _ = postgres_operator
+                        .stop_database(project.clone(), &project.name)
+                        .await;
+
+                    // Stop all branch containers
+                    for branch in &project.branches {
+                        debug!("Stopping branch container: {}", branch.name);
+                        let _ = postgres_operator
+                            .stop_database(project.clone(), &branch.name)
+                            .await;
+                    }
+
+                    // Unmount BTRFS filesystem
+                    debug!("Unmounting BTRFS filesystem for project: {}", project.name);
+                    let btrfs_operator =
+                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
+                    let _ = btrfs_operator.unmount_disk();
+                }
+
+                // Resume all containers with proper mounts
+                for project in &self.state.projects {
+                    debug!("Resuming project: {}", project.name);
+
+                    // Mount BTRFS filesystem
+                    let mut btrfs_operator =
+                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
+                    if let Err(e) = btrfs_operator.mount_disk() {
+                        debug!("Failed to mount BTRFS for project {}: {}", project.name, e);
+                        continue;
+                    }
+
+                    // Start main project container
+                    let postgres_operator = PostgresOperator::new();
+                    let _ = postgres_operator
+                        .create_database(
+                            project.clone(),
+                            self.state.config.clone(),
+                            project.port,
+                            &project.name,
+                        )
+                        .await;
+
+                    // Start all branch containers
+                    for branch in &project.branches {
+                        debug!("Starting branch container: {}", branch.name);
+                        let _ = postgres_operator
+                            .create_database(
+                                project.clone(),
+                                self.state.config.clone(),
+                                branch.port,
+                                &branch.name,
+                            )
+                            .await;
+                    }
+                }
+
+                info!("dBranch system restarted successfully");
                 Ok(())
             }
         }

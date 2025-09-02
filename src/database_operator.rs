@@ -20,6 +20,7 @@ pub trait DatabaseOperator {
         name: &str,
     ) -> Result<(), AppError>;
     async fn delete_database(&self, project: Project, name: &str) -> Result<(), AppError>;
+    async fn stop_database(&self, project: Project, name: &str) -> Result<(), AppError>;
     async fn list_databases(&self, project: Project) -> Result<Vec<Branch>, AppError>;
     async fn get_database_info(&self, project: Project, name: &str) -> Result<Branch, AppError>;
 }
@@ -110,7 +111,7 @@ impl DatabaseOperator for PostgresOperator {
                     .unwrap(),
             )
             .env("PGDATA", "/var/lib/postgresql/data/pgdata")
-            .restart("unless-stopped")
+            .restart("no")
             .detach()
             .execute()
             .await
@@ -165,6 +166,34 @@ impl DatabaseOperator for PostgresOperator {
         }
 
         info!("PostgreSQL container '{}' deleted successfully", name);
+        Ok(())
+    }
+
+    async fn stop_database(&self, project: Project, name: &str) -> Result<(), AppError> {
+        info!(
+            "Stopping PostgreSQL database '{}' for project '{}'",
+            name, project.name
+        );
+
+        debug!("Stopping PostgreSQL container: {}", name);
+
+        let stop_output = StopCommand::new(name)
+            .execute()
+            .await
+            .map_err(|e| AppError::Docker {
+                message: format!("Failed to stop Docker container {}: {}", name, e),
+            })?;
+
+        if !stop_output.is_success() {
+            debug!(
+                "Container {} might already be stopped: {}",
+                name, stop_output.stderr
+            );
+        } else {
+            info!("Container {} stopped successfully", name);
+        }
+
+        info!("PostgreSQL container '{}' stopped successfully", name);
         Ok(())
     }
 

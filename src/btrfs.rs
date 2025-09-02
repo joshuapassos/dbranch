@@ -125,7 +125,7 @@ impl BtrfsOperator {
         Ok(())
     }
 
-    pub fn release_space(&self) -> Result<()> {
+    pub fn delete_img(&self) -> Result<()> {
         info!("Releasing disk space for image at {:?}", self.img_path);
         let file = File::options().write(true).open(&self.img_path).unwrap();
         file.set_len(0).unwrap();
@@ -308,7 +308,6 @@ impl BtrfsOperator {
         }
         debug!("Loop device detached successfully");
 
-        self.release_space().unwrap();
         info!("Disk unmount process completed successfully");
 
         Ok(())
