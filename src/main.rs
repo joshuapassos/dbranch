@@ -28,7 +28,7 @@ async fn main() {
     debug!("CLI arguments parsed: {:?}", cli.command);
 
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::new("debug"))
+        .with(tracing_subscriber::EnvFilter::new("INFO"))
         .with(tracing_subscriber::fmt::layer())
         .init();
 

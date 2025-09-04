@@ -7,19 +7,15 @@
 
 ## 🌿 dBranch - PostgreSQL Database Branching System
 
-dBranch is a database branching system for PostgreSQL that enables developers to create, manage, and switch between multiple database branches effortlessly. Built with Rust, it leverages BTRFS snapshots for efficient storage and Docker containers for isolated database instances.
+dBranch is a database branching system designed for PostgreSQL that empowers developers to effortlessly create, manage, and switch between multiple database branches. Built with Rust (my first project in Rust), it leverages the powerful capabilities of BTRFS snapshots for efficient storage management and utilizes Docker containers to provide fully isolated database instances.
 
-## 🎯 Key Features
+Its key features include Instant Database Branching, which allows for the creation of lightweight branches using BTRFS's copy-on-write (COW) snapshots. This approach makes the system highly Resource Efficient, as all branches inherently share common data blocks, dramatically minimizing storage overhead. For isolation and stability, each branch operates within its own Isolated Environment—a dedicated Docker container that ensures no interference between branches and provides unique network ports.
 
-- **Instant Database Branching**: Create lightweight database branches using BTRFS copy-on-write (COW) snapshots
-- **Resource Efficient**: Branches share common data blocks, minimizing storage overhead
-- **Isolated Environments**: Each branch runs in its own Docker container with dedicated ports
-- **Transparent Proxy**: Seamlessly switch between branches without changing connection strings
-- **Project Management**: Organize multiple database projects with their own branch hierarchies
+Furthermore, dBranch includes a Transparent Proxy that enables seamless context switching between different database branches without requiring any changes to the application's connection string, streamlining the development workflow.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -73,12 +69,11 @@ dBranch is a database branching system for PostgreSQL that enables developers to
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 📋 Prerequisites
+## Prerequisites
 
 - **Operating System**: Linux with BTRFS support
 - **Docker**: Installed and running
 - **Rust**: 1.70+ (for building from source)
-- **Available disk space**: Minimum 5GB per project
 
 
 ## Sudo privileges
@@ -86,149 +81,20 @@ dBranch is a database branching system for PostgreSQL that enables developers to
 Some operations require sudo privileges. For example, commands like `mount`, `losetup`, and `btrfs` need elevated permissions. Therefore, dBranch may occasionally request sudo access, but it will always display the command on the screen.
 
 
-## 🚀 Installation
-
-### Building from Source
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/dbranch.git
-cd dbranch
-
-# Build the project
-cargo build --release
-
-# Install the binary (optional)
-sudo cp target/release/dbranch /usr/local/bin/
-```
-
-## 📖 Usage
-
-### Initialize a Project
+## Usage
 
 Create a new dBranch project with a PostgreSQL instance:
 
 ```bash
 dbranch init
 ```
-or
 
-```bash
-dbranch init --name my_project --port 5432
-```
-
-This creates:
-- A BTRFS filesystem for the project
-- A main PostgreSQL container
-- Configuration files in `.config/`
-
-### Create a Branch
-
-Create a new database branch from the current state:
-
-```bash
-dbranch create feature-branch
-```
-
-Or create from a specific source branch:
-
-```bash
-dbranch create hotfix --source main
-```
-
-### Switch Between Branches
-
-Change the active branch (proxy will route to this branch):
-
-```bash
-dbranch use feature-branch
-```
-
-### View Project Status
-
-Check the current project and active branch:
-
-```bash
-dbranch status
-```
-
-### List All Branches
-
-```bash
-dbranch list
-```
-
-### Start the Proxy Server
-
-Start the PostgreSQL proxy that routes connections to the active branch:
-
-```bash
-dbranch start
-```
-
-The proxy listens on port 5432 by default and forwards connections to the active branch's container.
-
-### Stop All Containers
-
-Stop all running containers and unmount filesystems:
-
-```bash
-dbranch stop
-```
-
-### Resume After Stop
-
-Resume all containers and remount filesystems:
-
-```bash
-dbranch resume
-```
-
-### Delete a Branch
-
-```bash
-dbranch delete branch-name
-```
-
-### Delete an Entire Project
-
-```bash
-dbranch delete-project project-name
-```
-
-### Set Default Project
-
-```bash
-dbranch set-default project-name
-```
-
-## ⚙️ Configuration
-
-Configuration is stored in `.config/dbranch.config.json`:
-
-```json
-{
-  "api_port": 8080,
-  "proxy_port": 5432,
-  "port_min": 5433,
-  "port_max": 5500,
-  "mount_point": "/mnt/dbranch",
-  "default_project": "my_project",
-  "postgres_config": {
-    "user": "postgres",
-    "password": "postgres",
-    "database": "dbranch"
-  },
-  "projects": ["my_project"]
-}
-```
-
-### Environment Variables
-
-- `DBRANCH_CONFIG`: Custom configuration directory (default: `.config`)
-- `DBRANCH_API_PORT`: API server port
-- `DBRANCH_PROXY_PORT`: Proxy server port
-- `DBRANCH_MOUNT_POINT`: BTRFS mount point
+## TODO
+- [ ] Improve Postgres configuration to share more files between branches (e.g Disable auto vacuum and wall recycling)
+- [ ] Add tests
+- [ ] Improve error handling and messages
+- [ ] Sync with remote postgres (optional)
+- [ ] Web interface to manage branches
 
 ## 🔧 How It Works
 
@@ -259,21 +125,3 @@ dbranch create experiment --source feature-new-schema
 # Switch back to main
 dbranch use main
 ```
-## 🔒 Security Considerations
-
-- Requires sudo privileges for BTRFS operations
-- Each container runs in an isolated network (`dbranch-network`)
-- Default PostgreSQL credentials should be changed in production
-- Consider firewall rules for exposed ports
-
-## 📝 License
-
-MIT License - See LICENSE file for details
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 🔗 Links
-
-- [Issue Tracker](https://github.com/joshuapassos/dbranch/issues)

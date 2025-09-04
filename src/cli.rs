@@ -1,3 +1,4 @@
+use crate::error::AppError;
 use crate::{
     btrfs,
     config::Config,
@@ -6,11 +7,11 @@ use crate::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
+use prettytable::{Attr, Cell, Row, Table, color, row};
 use serde::{Deserialize, Serialize};
+use size::{Base, Size};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
-
-use crate::error::AppError;
 
 #[derive(Parser)]
 #[command(name = "dbranch")]
@@ -272,7 +273,6 @@ impl CliHandler {
                     )
                     .unwrap();
 
-                debug!("Create command processed (implementation pending)");
                 Ok(())
             }
             Commands::SetDefault(args) => {
@@ -317,16 +317,16 @@ impl CliHandler {
                 for branch in project.clone().branches {
                     debug!("Deleting branch: {}", branch.name);
 
-                    postgres_operator
-                        .delete_database(project.clone(), &format!("{}", branch.name))
-                        .await?;
+                    let _ = postgres_operator
+                        .delete_database(project.clone(), branch.name.as_str())
+                        .await;
                 }
 
                 // Delete PostgreSQL container
                 {
                     debug!("Deleting PostgreSQL container");
                     postgres_operator
-                        .delete_database(project.clone(), &format!("{}", project.name))
+                        .delete_database(project.clone(), "main")
                         .await?;
                 }
 
@@ -407,18 +407,205 @@ impl CliHandler {
                     .ok_or_else(|| AppError::DefaultProjectNotFound)?;
 
                 debug!("Active project found: {}", project.name);
-                println!("{}", String::from("-").repeat(60));
-                println!("🌐 Project Name: {}", project.name);
-                println!("⚙️  Project Path: {}", project.path.to_string_lossy());
 
+                let btrfs_operator =
+                    btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
+
+                let postgres_operator = PostgresOperator::new();
+
+                println!("{}", String::from("=").repeat(80));
+                println!("🌐 PROJECT: {}", project.name);
+                println!("{}", String::from("-").repeat(80));
+                println!("⚙️  Path: {}", project.path.to_string_lossy());
                 println!(
                     "🌿 Active Branch: {}",
-                    project
-                        .active_branch
-                        .as_deref()
-                        .unwrap_or("No active branch 🆓")
+                    project.active_branch.as_deref().unwrap_or("none")
                 );
-                println!("{}", String::from("-").repeat(60));
+
+                let mut total_exclusive_size: u64 = 0;
+
+                match btrfs_operator.get_filesystem_info() {
+                    Ok((total, used, available)) => {
+                        let usage_percent = if total > 0 {
+                            (used as f64 / total as f64 * 100.0) as u32
+                        } else {
+                            0
+                        };
+
+                        println!(
+                            "💾 Storage: {} used / {} total ({} available - {}% used)",
+                            Size::from_bytes(used),
+                            Size::from_bytes(total),
+                            Size::from_bytes(available),
+                            usage_percent
+                        );
+                    }
+                    Err(e) => {
+                        debug!("Failed to get filesystem info: {}", e);
+                        println!("💾 Storage: N/A");
+                    }
+                }
+
+                println!("{}", String::from("-").repeat(80));
+
+                let mut table = Table::new();
+
+                table.add_row(Row::new(vec![
+                    Cell::new("Branch").with_style(Attr::Bold),
+                    Cell::new("Logical Size").with_style(Attr::Bold),
+                    Cell::new("Unique Data").with_style(Attr::Bold),
+                    Cell::new("Container").with_style(Attr::Bold),
+                    Cell::new("Age").with_style(Attr::Bold),
+                ]));
+
+                let main_container_status = postgres_operator
+                    .is_container_running(format!("{}_main", project.name).as_str())
+                    .await
+                    .unwrap_or(false);
+
+                let main_age = {
+                    let duration = Utc::now() - project.created_at;
+                    if duration.num_days() > 0 {
+                        format!("{}d", duration.num_days())
+                    } else if duration.num_hours() > 0 {
+                        format!("{}h", duration.num_hours())
+                    } else {
+                        format!("{}m", duration.num_minutes())
+                    }
+                };
+
+                let mut shared_base_size: u64 = 0;
+                let (main_real_size, main_effective_size) = match btrfs_operator
+                    .get_subvolume_info("main")
+                {
+                    Ok(info) => {
+                        total_exclusive_size += info.exclusive_size;
+                        shared_base_size = info.referenced_size.saturating_sub(info.exclusive_size);
+                        (
+                            Some(Size::from_bytes(info.referenced_size)),
+                            Some(Size::from_bytes(info.exclusive_size)),
+                        )
+                    }
+                    Err(_) => (None, None),
+                };
+
+                table.add_row(Row::new(vec![
+                    Cell::new("📦 Shared Base"),
+                    Cell::new(&Size::from_bytes(shared_base_size).to_string()),
+                    Cell::new("-"),
+                    Cell::new("🔗 Shared"),
+                    Cell::new("-"),
+                ]));
+
+                table.add_row(Row::new(vec![
+                    Cell::new("main").with_style(Attr::Bold),
+                    Cell::new(
+                        &main_real_size
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "N/A".to_string()),
+                    ),
+                    Cell::new(
+                        &main_effective_size
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "N/A".to_string()),
+                    ),
+                    Cell::new(if main_container_status {
+                        "✅ Running"
+                    } else {
+                        "❌ Stopped"
+                    }),
+                    Cell::new(main_age.as_str()),
+                ]));
+
+                let mut total_logical_size: u64 = 0;
+                if let Ok(info) = btrfs_operator.get_subvolume_info("main") {
+                    total_logical_size += info.referenced_size;
+                }
+
+                for (_, branch) in project.branches.iter().enumerate() {
+                    let container_status = postgres_operator
+                        .is_container_running(format!("{}_{}", project.name, branch.name).as_str())
+                        .await
+                        .unwrap_or(false);
+
+                    let age = {
+                        let duration = Utc::now() - branch.created_at;
+                        if duration.num_days() > 0 {
+                            format!("{}d", duration.num_days())
+                        } else if duration.num_hours() > 0 {
+                            format!("{}h", duration.num_hours())
+                        } else {
+                            format!("{}m", duration.num_minutes())
+                        }
+                    };
+
+                    let (real_size, effective_size) =
+                        match btrfs_operator.get_subvolume_info(&branch.name) {
+                            Ok(info) => {
+                                total_exclusive_size += info.exclusive_size;
+                                total_logical_size += info.referenced_size;
+                                (
+                                    Some(Size::from_bytes(info.referenced_size)),
+                                    Some(Size::from_bytes(info.exclusive_size)),
+                                )
+                            }
+                            Err(_) => (None, None),
+                        };
+
+                    table.add_row(Row::new(vec![
+                        Cell::new(branch.name.as_str()),
+                        Cell::new(
+                            &real_size
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "N/A".to_string()),
+                        ),
+                        Cell::new(
+                            &effective_size
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "N/A".to_string()),
+                        ),
+                        Cell::new(if container_status {
+                            "✅ Running"
+                        } else {
+                            "❌ Stopped"
+                        }),
+                        Cell::new(age.as_str()),
+                    ]));
+                }
+
+                let _ = table.print_tty(true);
+
+                if total_logical_size > 0 {
+                    let real_disk_usage = shared_base_size + total_exclusive_size;
+                    let space_savings = if total_logical_size > real_disk_usage {
+                        ((total_logical_size - real_disk_usage) as f64 / total_logical_size as f64
+                            * 100.0) as u32
+                    } else {
+                        0
+                    };
+
+                    println!("📊 Summary:");
+                    println!("   • Shared base: {}", Size::from_bytes(shared_base_size));
+                    println!(
+                        "   • Total unique data: {}",
+                        Size::from_bytes(total_exclusive_size)
+                    );
+                    println!(
+                        "   • Real disk usage: {} (shared + unique)",
+                        Size::from_bytes(real_disk_usage)
+                    );
+                    println!(
+                        "   • Sum if independent: {}",
+                        Size::from_bytes(total_logical_size)
+                    );
+                    println!(
+                        "   • Space saved: {} ({}% reduction)",
+                        Size::from_bytes(total_logical_size.saturating_sub(real_disk_usage)),
+                        space_savings
+                    );
+                }
+
+                println!("{}", String::from("=").repeat(80));
                 Ok(())
             }
             Commands::Stop => {
@@ -439,7 +626,6 @@ impl CliHandler {
                         .stop_database(project.clone(), &project.name)
                         .await;
 
-                    // Unmount BTRFS filesystem
                     debug!("Unmounting BTRFS filesystem for project: {}", project.name);
                     let btrfs_operator =
                         btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
@@ -455,7 +641,6 @@ impl CliHandler {
                 for project in &self.state.projects {
                     debug!("Resuming project: {}", project.name);
 
-                    // Mount BTRFS filesystem
                     let mut btrfs_operator =
                         btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
                     if let Err(e) = btrfs_operator.mount_disk() {
@@ -463,18 +648,16 @@ impl CliHandler {
                         continue;
                     }
 
-                    // Start main project container
                     let postgres_operator = PostgresOperator::new();
                     let _ = postgres_operator
                         .create_database(
                             project.clone(),
                             self.state.config.clone(),
                             project.port,
-                            &project.name,
+                            "main",
                         )
                         .await;
 
-                    // Start all branch containers
                     for branch in &project.branches {
                         debug!("Starting branch container: {}", branch.name);
                         let _ = postgres_operator
@@ -538,7 +721,7 @@ impl CliHandler {
                             project.clone(),
                             self.state.config.clone(),
                             project.port,
-                            &project.name,
+                            "main",
                         )
                         .await;
 
@@ -570,7 +753,7 @@ impl CliHandler {
             self.state.config.port_range
         );
         info!("Found available port: {}", valid_port);
-        let db_name = name.unwrap_or_else(|| project.name.clone());
+        let db_name = name.unwrap_or_else(|| "main".to_string());
         debug!("Creating PostgreSQL database: {}", db_name);
         postgres_operator
             .create_database(

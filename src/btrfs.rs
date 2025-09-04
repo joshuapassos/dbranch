@@ -13,6 +13,14 @@ use std::path::PathBuf;
 use tracing::debug;
 use tracing::info;
 
+#[derive(Debug, Clone)]
+pub struct SubvolumeInfo {
+    pub name: String,
+    pub path: String,
+    pub referenced_size: u64,
+    pub exclusive_size: u64,
+}
+
 fn find_device_by_path(input: &str, target_path: &str) -> Option<String> {
     debug!("Searching for device with path: {}", target_path);
     let re =
@@ -503,5 +511,209 @@ impl BtrfsOperator {
             .collect();
 
         Ok(subvolumes)
+    }
+
+    pub fn get_subvolume_info(
+        &self,
+        subvolume_name: &str,
+    ) -> Result<SubvolumeInfo, error::AppError> {
+        debug!("Getting info for subvolume: {}", subvolume_name);
+        Self::prompt_sudo_password().unwrap();
+
+        let subvolume_path = format!("{}/{}", &self.mount_point, subvolume_name);
+
+        // Get quota info for the subvolume
+        let output = std::process::Command::new("sudo")
+            .arg("btrfs")
+            .arg("qgroup")
+            .arg("show")
+            .arg("-r")
+            .arg("-e")
+            .arg("--raw")
+            .arg(&self.mount_point)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to get subvolume quota info: {}", e),
+            })?;
+
+        if !output.status.success() {
+            // If qgroups are not enabled, try to enable them first
+            debug!("Qgroups might not be enabled, attempting to enable them");
+            let _ = std::process::Command::new("sudo")
+                .arg("btrfs")
+                .arg("quota")
+                .arg("enable")
+                .arg(&self.mount_point)
+                .output();
+
+            // Try to get the sizes using du as a fallback
+            return self.get_subvolume_size_fallback(subvolume_name);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut referenced_size: u64 = 0;
+        let mut exclusive_size: u64 = 0;
+
+        // Parse the qgroup output to find our subvolume
+        for line in stdout.lines() {
+            if line.contains(subvolume_name) || line.contains(&subvolume_path) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 {
+                    referenced_size = parts[1].parse().unwrap_or(0);
+                    exclusive_size = parts[2].parse().unwrap_or(0);
+                    break;
+                }
+            }
+        }
+
+        // If we couldn't find it in qgroup output, use fallback
+        if referenced_size == 0 && exclusive_size == 0 {
+            return self.get_subvolume_size_fallback(subvolume_name);
+        }
+
+        Ok(SubvolumeInfo {
+            name: subvolume_name.to_string(),
+            path: subvolume_path,
+            referenced_size,
+            exclusive_size,
+        })
+    }
+
+    fn get_subvolume_size_fallback(
+        &self,
+        subvolume_name: &str,
+    ) -> Result<SubvolumeInfo, error::AppError> {
+        debug!(
+            "Using fallback method (du) to calculate subvolume size for: {}",
+            subvolume_name
+        );
+
+        let subvolume_path = format!("{}/{}", &self.mount_point, subvolume_name);
+
+        // Use du to get the size
+        let output = std::process::Command::new("sudo")
+            .arg("du")
+            .arg("-sb")
+            .arg(&subvolume_path)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to get subvolume size using du: {}", e),
+            })?;
+
+        if !output.status.success() {
+            return Err(AppError::FileSystem {
+                message: format!(
+                    "Failed to get subvolume size: stderr={}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let size: u64 = stdout
+            .split_whitespace()
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        Ok(SubvolumeInfo {
+            name: subvolume_name.to_string(),
+            path: subvolume_path,
+            referenced_size: size,
+            exclusive_size: size, // In fallback mode, we can't determine exclusive size
+        })
+    }
+
+    pub fn get_filesystem_info(&self) -> Result<(u64, u64, u64), error::AppError> {
+        debug!("Getting filesystem info for: {}", self.mount_point);
+        Self::prompt_sudo_password().unwrap();
+
+        // Use df to get filesystem usage - simpler and more reliable
+        let output = std::process::Command::new("df")
+            .arg("-B1") // Output in bytes
+            .arg(&self.mount_point)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to get filesystem info: {}", e),
+            })?;
+
+        if !output.status.success() {
+            // Fallback to du if df fails
+            return self.get_filesystem_info_fallback();
+        }
+
+        // Parse df output
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = stdout.lines().collect();
+
+        if lines.len() < 2 {
+            return self.get_filesystem_info_fallback();
+        }
+
+        // Parse the second line (first line is header)
+        let parts: Vec<&str> = lines[1].split_whitespace().collect();
+        if parts.len() < 4 {
+            return self.get_filesystem_info_fallback();
+        }
+
+        // df output format: Filesystem 1K-blocks Used Available Use% Mounted
+        let total_bytes = parts[1].parse::<u64>().unwrap_or(self.size);
+        let used_bytes = parts[2].parse::<u64>().unwrap_or(0);
+        let available_bytes = parts[3].parse::<u64>().unwrap_or(0);
+
+        Ok((total_bytes, used_bytes, available_bytes))
+    }
+
+    fn get_filesystem_info_fallback(&self) -> Result<(u64, u64, u64), error::AppError> {
+        debug!("Using fallback method (du) to calculate filesystem usage");
+
+        // Use du to get actual used space for all subvolumes
+        let output = std::process::Command::new("sudo")
+            .arg("du")
+            .arg("-sb")
+            .arg(&self.mount_point)
+            .output()
+            .map_err(|e| AppError::FileSystem {
+                message: format!("Failed to get filesystem usage with du: {}", e),
+            })?;
+
+        let used_bytes = if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            stdout
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+
+        let total_bytes = self.size;
+        let available_bytes = if used_bytes < total_bytes {
+            total_bytes - used_bytes
+        } else {
+            0
+        };
+
+        Ok((total_bytes, used_bytes, available_bytes))
+    }
+
+    pub fn get_all_subvolumes_info(&self) -> Result<Vec<SubvolumeInfo>, error::AppError> {
+        debug!("Getting info for all subvolumes");
+
+        let subvolumes = self.list_subvolumes()?;
+        let mut infos = Vec::new();
+
+        for subvolume in subvolumes {
+            match self.get_subvolume_info(&subvolume) {
+                Ok(info) => infos.push(info),
+                Err(e) => {
+                    debug!("Failed to get info for subvolume {}: {}", subvolume, e);
+                    // Continue with other subvolumes
+                }
+            }
+        }
+
+        Ok(infos)
     }
 }

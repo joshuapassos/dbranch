@@ -1,7 +1,8 @@
 use std::path::Path;
 
 use docker_wrapper::{
-    DockerCommand, NetworkCreateCommand, NetworkLsCommand, RmCommand, RunCommand, StopCommand,
+    DockerCommand, InspectCommand, NetworkCreateCommand, NetworkLsCommand, RmCommand, RunCommand,
+    StopCommand,
 };
 use tracing::{debug, info};
 
@@ -23,6 +24,7 @@ pub trait DatabaseOperator {
     async fn stop_database(&self, project: Project, name: &str) -> Result<(), AppError>;
     async fn list_databases(&self, project: Project) -> Result<Vec<Branch>, AppError>;
     async fn get_database_info(&self, project: Project, name: &str) -> Result<Branch, AppError>;
+    async fn is_container_running(&self, name: &str) -> Result<bool, AppError>;
 }
 
 pub struct PostgresOperator {}
@@ -71,8 +73,8 @@ impl DatabaseOperator for PostgresOperator {
         }
 
         let volume_path = Path::new(config.mount_point.clone().as_str())
+            .join(&project.name)
             .join(&name)
-            .join("main")
             .join("data")
             .to_string_lossy()
             .into_owned();
@@ -92,7 +94,7 @@ impl DatabaseOperator for PostgresOperator {
         );
 
         let _output = RunCommand::new("postgres:17-alpine")
-            .name(name)
+            .name(format!("{}_{}", project.name, name))
             .port(port, 5432)
             .network("dbranch-network")
             .volume(volume_path, "/var/lib/postgresql/data")
@@ -133,11 +135,15 @@ impl DatabaseOperator for PostgresOperator {
 
         debug!("Stopping and removing PostgreSQL container: {}", name);
 
-        let stop_output = StopCommand::new(name)
+        let stop_output = StopCommand::new(format!("{}_{}", project.name, name))
             .execute()
             .await
             .map_err(|e| AppError::Docker {
-                message: format!("Failed to stop Docker container {}: {}", name, e),
+                message: format!(
+                    "Failed to stop Docker container {}: {}",
+                    format!("{}_{}", project.name, name),
+                    e
+                ),
             })?;
 
         if !(stop_output.is_success()) {
@@ -149,11 +155,15 @@ impl DatabaseOperator for PostgresOperator {
             info!("Container {} stopped successfully", name);
         }
 
-        let rm_output = RmCommand::new(name)
+        let rm_output = RmCommand::new(format!("{}_{}", project.name, name))
             .execute()
             .await
             .map_err(|e| AppError::Docker {
-                message: format!("Failed to remove Docker container {}: {}", name, e),
+                message: format!(
+                    "Failed to remove Docker container {}: {}",
+                    format!("{}_{}", project.name, name),
+                    e
+                ),
             })?;
 
         if !(rm_output.removed_contexts().len() > 0) {
@@ -170,30 +180,35 @@ impl DatabaseOperator for PostgresOperator {
     }
 
     async fn stop_database(&self, project: Project, name: &str) -> Result<(), AppError> {
+        let container_name = format!("{}_{}", project.name, name);
+
         info!(
             "Stopping PostgreSQL database '{}' for project '{}'",
-            name, project.name
+            container_name, project.name
         );
 
-        debug!("Stopping PostgreSQL container: {}", name);
+        debug!("Stopping PostgreSQL container: {}", container_name);
 
-        let stop_output = StopCommand::new(name)
+        let stop_output = StopCommand::new(container_name.clone())
             .execute()
             .await
             .map_err(|e| AppError::Docker {
-                message: format!("Failed to stop Docker container {}: {}", name, e),
+                message: format!("Failed to stop Docker container {}: {}", container_name, e),
             })?;
 
         if !stop_output.is_success() {
             debug!(
                 "Container {} might already be stopped: {}",
-                name, stop_output.stderr
+                container_name, stop_output.stderr
             );
         } else {
-            info!("Container {} stopped successfully", name);
+            info!("Container {} stopped successfully", container_name);
         }
 
-        info!("PostgreSQL container '{}' stopped successfully", name);
+        info!(
+            "PostgreSQL container '{}' stopped successfully",
+            container_name
+        );
         Ok(())
     }
 
@@ -215,5 +230,29 @@ impl DatabaseOperator for PostgresOperator {
         Err(AppError::NotImplemented {
             command: "get_database_info".into(),
         })
+    }
+
+    async fn is_container_running(&self, name: &str) -> Result<bool, AppError> {
+        debug!("Checking if container '{}' is running", name);
+
+        let inspect_output = InspectCommand::new(name).execute().await;
+
+        match inspect_output {
+            Ok(output) => {
+                if output.success && !output.stdout.is_empty() {
+                    let is_running = output.stdout.contains("\"Running\":true")
+                        || output.stdout.contains("\"Running\": true");
+                    debug!("Container '{}' running status: {}", name, is_running);
+                    Ok(is_running)
+                } else {
+                    debug!("Container '{}' not found or inspect failed", name);
+                    Ok(false)
+                }
+            }
+            Err(e) => {
+                debug!("Failed to inspect container '{}': {}", name, e);
+                Ok(false)
+            }
+        }
     }
 }
