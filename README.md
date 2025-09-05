@@ -90,6 +90,7 @@ dbranch init
 ```
 
 ## TODO
+- [ ] Rewrite BTRFS module :) 
 - [ ] Improve Postgres configuration to share more files between branches (e.g Disable auto vacuum and wall recycling)
 - [ ] Add tests
 - [ ] Improve error handling and messages
