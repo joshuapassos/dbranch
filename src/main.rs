@@ -3,6 +3,7 @@ mod cli;
 mod config;
 mod database_operator;
 mod error;
+mod copy_ref;
 
 use std::sync::Arc;
 
