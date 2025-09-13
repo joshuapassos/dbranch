@@ -43,7 +43,9 @@ fn find_device_by_path(input: &str, target_path: &str) -> Option<String> {
 
 #[derive(Debug)]
 pub struct BtrfsOperator {
+    // Img file path (e.g., /path/to/project/btrfs.img)
     img_path: PathBuf,
+    // Mount point for the cow like filesystem (e.g., /mnt/projects/project_name)
     mount_point: String,
     size: u64,
 }
@@ -57,7 +59,7 @@ impl BtrfsOperator {
         Self {
             img_path: project.path.join("btrfs.img"),
             mount_point: project_mount_point.clone(),
-            size: 5 * 1024 * 1024 * 1024, // 5GB per project (adjustable)
+            size: 1 * 1024 * 1024 * 1024 * 1024, // 1TB per project (adjustable)
         }
     }
 

@@ -1,6 +1,7 @@
 mod btrfs;
 mod cli;
 mod config;
+mod copy_ref;
 mod database_operator;
 mod error;
 mod copy_ref;
