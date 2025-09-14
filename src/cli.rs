@@ -1,4 +1,5 @@
 use crate::error::AppError;
+use crate::snapshot;
 use crate::{
     btrfs,
     config::Config,
@@ -7,9 +8,9 @@ use crate::{
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand};
-use prettytable::{Attr, Cell, Row, Table, color, row};
+use prettytable::{Attr, Cell, Row, Table};
 use serde::{Deserialize, Serialize};
-use size::{Base, Size};
+use size::Size;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
@@ -185,7 +186,7 @@ impl CliHandler {
                         "Initializing individual BTRFS filesystem for project: {}",
                         args.name
                     );
-                    let mut btrfs_operator =
+                    let btrfs_operator =
                         btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
 
                     debug!("Checking BTRFS installation");
@@ -262,12 +263,33 @@ impl CliHandler {
                     }
                 }
 
-                let btrfs_operator = btrfs::BtrfsOperator::new(
-                    self.state.active_project.clone().unwrap(),
-                    self.state.config.clone(),
+                // {
+                //     let btrfs_operator = btrfs::BtrfsOperator::new(
+                //         self.state.active_project.clone().unwrap(),
+                //         self.state.config.clone(),
+                //     );
+
+                //     btrfs_operator.create_snapshot(&args.name).unwrap();
+                // }
+
+                let project_name = self.state.config.default_project.clone().unwrap();
+
+                let src_path = Path::new(&self.state.config.mount_point)
+                    .join(&project_name.clone())
+                    .join("main/data");
+
+                let dest_path = Path::new(&self.state.config.mount_point)
+                    .join(&project_name.clone())
+                    .join(&args.name)
+                    .join("data");
+
+                info!(
+                    "Copying data from {:?} to {:?}",
+                    src_path.clone(),
+                    dest_path.clone()
                 );
 
-                btrfs_operator.create_snapshot(&args.name).unwrap();
+                snapshot::snapshot(&src_path, &dest_path).unwrap();
 
                 let valid_port = self.state.config.get_valid_port().unwrap();
 

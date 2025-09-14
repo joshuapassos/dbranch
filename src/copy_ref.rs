@@ -5,7 +5,7 @@ use std::{
 
 use crate::error;
 
-trait CopyRef {
+pub trait CopyRef {
     fn copy_ref(&self, src: &File, dest: &File) -> Result<(), error::AppError>;
 }
 

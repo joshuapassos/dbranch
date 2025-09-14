@@ -19,11 +19,47 @@ pub struct FolderConfig {
     path: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum Approach {
+    NewDisk,
+    ExistingDisk,
+}
 
+impl<'de> Deserialize<'de> for Approach {
+    fn deserialize<D>(deserializer: D) -> Result<Approach, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "NEW_DISK" => Ok(Approach::NewDisk),
+            "EXISTING_DISK" => Ok(Approach::ExistingDisk),
+            _ => Err(serde::de::Error::unknown_variant(
+                &s,
+                &["NEW_DISK", "EXISTING_DISK"],
+            )),
+        }
+    }
+}
+
+impl Serialize for Approach {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s = match self {
+            Approach::NewDisk => "NEW_DISK",
+            Approach::ExistingDisk => "EXISTING_DISK",
+        };
+        serializer.serialize_str(s)
+    }
+}
+
+#[derive(Debug, PartialEq, Serialize, Deserialize, Eq, Clone)]
 pub struct FileConfigInfo {
     pub api_port: Option<u16>,
     pub proxy_port: Option<u16>,
+    pub approach: Option<Approach>,
     pub port_min: Option<u16>,
     pub port_max: Option<u16>,
     pub mount_point: Option<String>,
@@ -36,6 +72,7 @@ pub struct FileConfigInfo {
 pub struct Config {
     pub path: PathBuf,
     pub config_path: PathBuf,
+    pub approach: Approach,
     pub api_port: u16,
     pub proxy_port: u16,
     pub port_range: (u16, u16),
@@ -46,7 +83,6 @@ pub struct Config {
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-
 pub struct PostgresConfig {
     pub user: String,
     pub password: String,
@@ -90,6 +126,17 @@ impl Config {
         Ok(Self {
             path: path.to_path_buf(),
             config_path: path.join("dbranch.config.json"),
+            approach: c
+                .approach
+                .or_else(|| {
+                    std::env::var("DBRANCH_APPROACH")
+                        .ok()
+                        .and_then(|v| match v.as_str() {
+                            "EXISTING_DISK" => Some(Approach::ExistingDisk),
+                            _ => Some(Approach::NewDisk),
+                        })
+                })
+                .unwrap_or(Approach::NewDisk),
             api_port: std::env::var("DBRANCH_API_PORT")
                 .ok()
                 .and_then(|v| v.parse::<u16>().ok())
@@ -176,6 +223,7 @@ impl Config {
             let obj = FileConfigInfo {
                 api_port: Some(c.api_port),
                 proxy_port: Some(c.proxy_port),
+                approach: Some(c.approach.clone()),
                 port_min: Some((c.port_range).0),
                 port_max: Some((c.port_range).1),
                 mount_point: Some(c.mount_point.clone()),
@@ -406,6 +454,7 @@ impl Config {
 
         let obj = FileConfigInfo {
             api_port: Some(self.api_port),
+            approach: Some(self.approach.clone()),
             proxy_port: Some(self.proxy_port),
             port_min: Some(self.port_range.0),
             port_max: Some(self.port_range.1),

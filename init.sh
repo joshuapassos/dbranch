@@ -79,6 +79,7 @@ echo -e "${GREEN}✓ Device formatted as BTRFS${NC}"
 # Create mount point
 echo "Creating mount point: ${MOUNT_POINT}"
 sudo mkdir -p "${MOUNT_POINT}"
+sudo setfacl -R -m u:${USER_ID}:rwx "${MOUNT_POINT}"
 
 # Mount the device
 echo "Mounting ${LOOP_DEVICE} at ${MOUNT_POINT}..."
@@ -109,6 +110,7 @@ echo -e "${GREEN}✓ Subvolume 'main' created${NC}"
 # Create data directory in main subvolume
 echo "Creating data directory..."
 mkdir -p "${MOUNT_POINT}/main/data/pgdata"
+sudo chown -R ${USER_ID}:${USER_ID} "${MOUNT_POINT}"
 
 echo -e "${GREEN}✓ Directory structure created${NC}"
 echo ""

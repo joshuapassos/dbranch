@@ -4,6 +4,7 @@ mod config;
 mod copy_ref;
 mod database_operator;
 mod error;
+mod snapshot;
 
 use std::sync::Arc;
 
