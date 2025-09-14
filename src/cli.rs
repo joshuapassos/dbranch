@@ -28,6 +28,8 @@ pub enum Commands {
     Start,
     #[clap(about = "Initialize a new dBranch project")]
     Init(InitArgs),
+    #[clap(about = "Initialize a PostgreSQL database")]
+    InitPostgres,
     #[clap(about = "Set the default branch project")]
     SetDefault(SetDefaultArgs),
     #[clap(about = "Create a new branch project")]
@@ -192,21 +194,21 @@ impl CliHandler {
                     debug!("Reserving disk space for project filesystem");
                     btrfs_operator.reserve_space().unwrap();
 
-                    debug!("Ensuring any existing mount is unmounted before mounting");
-                    let _ = btrfs_operator.unmount_disk(); // Ignore errors - might not be mounted
+                    // debug!("Ensuring any existing mount is unmounted before mounting");
+                    // let _ = btrfs_operator.unmount_disk(); // Ignore errors - might not be mounted
 
-                    debug!("Mounting project BTRFS filesystem");
-                    btrfs_operator.mount_disk().unwrap();
-                    info!(
-                        "Project BTRFS filesystem '{}' mounted successfully",
-                        args.name
-                    );
+                    // debug!("Mounting project BTRFS filesystem");
+                    // btrfs_operator.mount_disk().unwrap();
+                    // info!(
+                    //     "Project BTRFS filesystem '{}' mounted successfully",
+                    //     args.name
+                    // );
 
                     info!("Project '{}' initialized with main subvolume", args.name);
                 }
 
                 // Create PostgreSQL database
-                self.create_postgres(None, valid_port, &project).await;
+                // self.create_postgres(None, valid_port, &project).await;
 
                 debug!("Adding project to configuration");
                 self.state.config.add_project(project);
@@ -221,6 +223,19 @@ impl CliHandler {
                 }
 
                 info!("Project {} initialized successfully", args.name);
+                Ok(())
+            }
+            Commands::InitPostgres => {
+                info!("Initializing standalone PostgreSQL database");
+                let project = self
+                    .state
+                    .config
+                    .get_project_info(None)
+                    .ok_or_else(|| AppError::DefaultProjectNotFound)?;
+
+                self.create_postgres(None, project.port, &project).await;
+
+                info!("Standalone PostgreSQL database initialized successfully");
                 Ok(())
             }
             Commands::Create(args) => {

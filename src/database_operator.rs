@@ -97,6 +97,7 @@ impl DatabaseOperator for PostgresOperator {
             .name(format!("{}_{}", project.name, name))
             .port(port, 5432)
             .network("dbranch-network")
+            .user("1000:1000") // This allow the container to run with the host user permissions
             .volume(volume_path, "/var/lib/postgresql/data")
             .env("POSTGRES_USER", config.postgres_config.user.as_str())
             .env(
