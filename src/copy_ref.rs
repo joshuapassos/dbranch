@@ -71,7 +71,6 @@ mod tests {
     use std::{
         fs,
         io::{BufWriter, Write},
-        os::fd::AsRawFd,
     };
 
     #[test]

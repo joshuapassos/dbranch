@@ -150,13 +150,11 @@ pub fn check_file(f: File) -> Result<Vec<Fiemap>, AppError> {
                 flags: FiemapFlags::from_bits(extent.fe_flags),
             });
 
-            // Check if this is the last extent
             if extent.fe_flags & FiemapFlags::Last as u32 != 0 {
                 found_last = true;
                 break;
             }
 
-            // Update offset for next iteration
             current_offset = extent.fe_logical + extent.fe_length;
         }
 
@@ -165,5 +163,5 @@ pub fn check_file(f: File) -> Result<Vec<Fiemap>, AppError> {
         }
     }
 
-    Ok(all_extents) // Return the first extent for simplicity
+    Ok(all_extents)
 }
