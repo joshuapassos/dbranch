@@ -1,9 +1,8 @@
+use crate::error;
 use std::{
     fs::File,
     os::raw::{c_char, c_int},
 };
-
-use crate::error;
 
 pub trait CopyRef {
     fn copy_ref(&self, src: &File, dest: &File) -> Result<(), error::AppError>;
@@ -29,11 +28,18 @@ impl CopyRef for CopyRefOperator {
 
         let info = src.metadata().unwrap().len() as usize;
         // https://man7.org/linux/man-pages/man2/copy_file_range.2.html
-        rustix::fs::copy_file_range(src.as_fd(), Some(&mut 0), dest.as_fd(), Some(&mut 0), info)
-            .map_err(|err| error::AppError::FileSystem {
+        let ret = unsafe {
+            use std::os::fd::AsRawFd;
+
+            nix::libc::copy_file_range(src.as_raw_fd(), &mut 0, dest.as_raw_fd(), &mut 0, info, 0)
+        };
+
+        if ret == -1 {
+            let err = std::io::Error::last_os_error();
+            return Err(error::AppError::FileSystem {
                 message: format!("Failed to copy ref from {:?} to {:?}: {}", src, dest, err),
-            })
-            .unwrap();
+            });
+        }
         Ok(())
     }
 
@@ -59,10 +65,13 @@ impl CopyRef for CopyRefOperator {
 
 #[cfg(test)]
 mod tests {
+    use crate::fiemap::{FiemapFlags, check_file};
+
     use super::*;
     use std::{
         fs,
         io::{BufWriter, Write},
+        os::fd::AsRawFd,
     };
 
     #[test]
@@ -107,6 +116,42 @@ mod tests {
             "Contents do not match after copy_ref"
         );
 
-        //TODO: check physical_offset and shared flag
+        assert_eq!(
+            src.metadata().unwrap().len(),
+            dest.metadata().unwrap().len(),
+            "File sizes do not match"
+        );
+
+        let src_extents = check_file(src);
+
+        let dest_extents = check_file(dest);
+
+        let aaa: Vec<(u64, u64, u64, bool)> = src_extents
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f.extent.fe_logical,
+                    f.extent.fe_physical,
+                    f.extent.fe_length,
+                    f.flags.contains(&FiemapFlags::Shared),
+                )
+            })
+            .collect();
+
+        let bbb: Vec<(u64, u64, u64, bool)> = dest_extents
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f.extent.fe_logical,
+                    f.extent.fe_physical,
+                    f.extent.fe_length,
+                    f.flags.contains(&FiemapFlags::Shared),
+                )
+            })
+            .collect();
+
+        assert_eq!(aaa, bbb, "File extents do not match");
     }
 }
