@@ -107,7 +107,6 @@ async fn run_server(
 
     debug!("Server startup initiated");
     let bind_addr = format!("0.0.0.0:{}", config.read().await.proxy_port);
-    info!("🚀 Proxy PostgreSQL starting...");
     info!("📡 Listening on: {}", bind_addr);
     println!(
         "🔄 ({}) Forwarding to branch '{}'",
@@ -121,8 +120,6 @@ async fn run_server(
             .clone()
             .unwrap_or("main".to_string())
     );
-    println!("🚀 Proxy PostgreSQL starting...");
-    println!("📡 Listening on: {}", bind_addr);
     let listener = TcpListener::bind(&bind_addr).await.unwrap();
 
     while let Ok((client, addr)) = listener.accept().await {
