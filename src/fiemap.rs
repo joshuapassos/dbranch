@@ -1,4 +1,7 @@
-use std::fs::File;
+use std::{
+    fs::{self, File},
+    path::Path,
+};
 
 use crate::error::AppError;
 // from https://github.com/torvalds/linux/blob/cbf658dd09419f1ef9de11b9604e950bdd5c170b/include/uapi/linux/fiemap.h
@@ -117,6 +120,10 @@ pub fn check_file(f: File) -> Result<Vec<Fiemap>, AppError> {
     let mut all_extents: Vec<Fiemap> = Vec::new();
     let mut current_offset: u64 = 0;
 
+    if file_size == 0 {
+        return Ok(all_extents);
+    }
+
     loop {
         let mut fr = Box::new(FiemapRequestFull::default());
         fr.request.fm_start = current_offset;
@@ -129,9 +136,10 @@ pub fn check_file(f: File) -> Result<Vec<Fiemap>, AppError> {
         if ret == -1 {
             let errno = std::io::Error::last_os_error();
             eprintln!(
-                "FIEMAP ioctl failed: {} (errno: {})",
+                "FIEMAP ioctl failed: {} (errno: {}) (file_path: {:?})",
                 errno,
-                errno.raw_os_error().unwrap()
+                errno.raw_os_error().unwrap(),
+                f.metadata().unwrap()
             );
             return Err(AppError::FileSystem {
                 message: format!("FIEMAP ioctl failed: {}", errno),
@@ -164,4 +172,73 @@ pub fn check_file(f: File) -> Result<Vec<Fiemap>, AppError> {
     }
 
     Ok(all_extents)
+}
+
+pub struct FileInfo {
+    pub real_size: u64,
+    pub shared_size: u64,
+    pub is_compressed: bool,
+    pub name: String,
+}
+
+pub struct FolderInfo {
+    pub logical_size: u64,
+    pub shared_size: u64,
+    pub files: Vec<FileInfo>,
+}
+
+pub fn get_folder_size(path: &Path) -> Option<FolderInfo> {
+    let mut fi = FolderInfo {
+        logical_size: 0u64,
+        shared_size: 0u64,
+        files: Vec::new(),
+    };
+
+    if path.is_dir() {
+        for entry in fs::read_dir(path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+
+            if path.is_dir() {
+                let subfolder_info = get_folder_size(&path);
+                if let Some(subfolder) = subfolder_info {
+                    fi.logical_size += subfolder.logical_size;
+                    fi.shared_size += subfolder.shared_size;
+                    fi.files.extend(subfolder.files);
+                } else {
+                    continue;
+                }
+            } else {
+                let file_info = check_file(fs::File::open(&path).unwrap());
+                fi.logical_size += fs::metadata(&path).unwrap().len();
+                fi.shared_size += file_info
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .filter(|f| f.flags.contains(&FiemapFlags::Shared))
+                    .map(|f| f.extent.fe_length)
+                    .sum::<u64>();
+                fi.files.push(FileInfo {
+                    real_size: fs::metadata(&path).unwrap().len(),
+                    shared_size: file_info
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .filter(|f| f.flags.contains(&FiemapFlags::Shared))
+                        .map(|f| f.extent.fe_length)
+                        .sum::<u64>(),
+                    is_compressed: file_info
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .any(|f| f.flags.contains(&FiemapFlags::Encoded)),
+                    name: path.file_name().unwrap().to_string_lossy().to_string(),
+                });
+            }
+        }
+
+        return Some(fi);
+    }
+
+    None
 }
