@@ -1,4 +1,3 @@
-mod btrfs;
 mod cli;
 mod config;
 mod copy_ref;
@@ -10,7 +9,7 @@ mod snapshot;
 use std::sync::Arc;
 
 use crate::{
-    cli::{AppState, Commands, Project},
+    cli::{AppState, Commands},
     config::Config,
     error::AppError,
 };
@@ -43,22 +42,13 @@ async fn main() {
 
     let config = Arc::new(RwLock::new(Config::from_file().unwrap()));
 
-    let project = Arc::new(RwLock::new(
-        config
-            .read()
-            .await
-            .get_project_info(config.read().await.default_project.clone()),
-    ));
-
-    tokio::spawn(sync_config(config.clone(), project.clone()));
+    tokio::spawn(sync_config(config.clone()));
 
     info!("Configuration loaded successfully");
 
     debug!("Creating CLI handler with initial state");
     let mut cli_handler = cli::CliHandler::new(AppState {
         config: config.read().await.clone(),
-        active_project: project.read().await.clone(),
-        projects: config.read().await.get_projects(),
     });
     debug!("CLI handler initialized");
 
@@ -67,7 +57,7 @@ async fn main() {
         Commands::Start => {
             info!("Starting dBranch service...");
             debug!("Initializing server components");
-            run_server(config, project).await.unwrap();
+            run_server(config).await.unwrap();
             info!("dBranch service started successfully");
         }
         cmd => {
@@ -78,14 +68,12 @@ async fn main() {
     }
 }
 
-async fn sync_config(config: Arc<RwLock<Config>>, project: Arc<RwLock<Option<Project>>>) {
+async fn sync_config(config: Arc<RwLock<Config>>) {
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         match Config::from_file() {
             Ok(new_config) => {
                 config.write().await.clone_from(&new_config);
-                *project.write().await =
-                    new_config.get_project_info(new_config.default_project.clone());
             }
             Err(e) => {
                 AppError::Internal {
@@ -96,69 +84,42 @@ async fn sync_config(config: Arc<RwLock<Config>>, project: Arc<RwLock<Option<Pro
     }
 }
 
-async fn run_server(
-    config: Arc<RwLock<Config>>,
-    project: Arc<RwLock<Option<Project>>>,
-) -> Result<(), error::AppError> {
-    if project.read().await.is_none() {
-        return Err(AppError::Internal {
-            message: "No active project found.".to_string(),
-        });
-    }
-
+async fn run_server(config: Arc<RwLock<Config>>) -> Result<(), error::AppError> {
     debug!("Server startup initiated");
     let bind_addr = format!("0.0.0.0:{}", config.read().await.proxy_port);
     info!("📡 Listening on: {}", bind_addr);
-    println!(
-        "🔄 ({}) Forwarding to branch '{}'",
-        project.read().await.clone().unwrap().name,
-        project
-            .read()
-            .await
-            .clone()
-            .unwrap()
-            .active_branch
-            .clone()
-            .unwrap_or("main".to_string())
-    );
+
     let listener = TcpListener::bind(&bind_addr).await.unwrap();
 
     while let Ok((client, addr)) = listener.accept().await {
         println!("🔗 New connection from: {}", addr);
 
-        let target_port = match &project.read().await.clone().unwrap().active_branch {
-            Some(branch_name) => {
-                println!(
-                    "🔄 ({}) Forwarding to branch '{}'",
-                    project.read().await.clone().unwrap().name,
-                    branch_name
-                );
-                project
+        let target_port = &config
+            .read()
+            .await
+            .clone()
+            .active_branch
+            .or(Some(String::from("main")))
+            .map(async |branch_name| {
+                config
                     .read()
                     .await
                     .clone()
-                    .unwrap()
                     .branches
                     .iter()
-                    .find(|b| b.name == *branch_name)
+                    .find(|b| b.name == branch_name)
                     .map(|b| b.port)
                     .unwrap()
-            }
-            None => {
-                println!(
-                    "🔄 ({}) Forwarding to branch 'main'",
-                    project.read().await.clone().unwrap().name
-                );
-                project.read().await.clone().unwrap().port
-            }
-        };
+            })
+            .unwrap()
+            .await;
 
         let target = format!("localhost:{}", target_port);
         tokio::spawn(async move {
             if let Err(e) = handle_connection(client, &target).await {
                 println!("❌ Connection error {}: {}", addr, e);
             } else {
-                println!("✅ Connection {} finished", addr);
+                println!("✅ Connection {} finished - (target: {})", addr, target);
             }
         });
     }

@@ -7,7 +7,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
     exit 0
 fi
 
-PROJECT_NAME=$(cat ${CONFIG_FILE} | jq -r '.default_project')
+PROJECT_NAME=$(cat ${CONFIG_FILE} | jq -r '.name')
 PROJECT_PATH=$(dirname "$(realpath ${CONFIG_FILE})")
 IMG_PATH="${PROJECT_PATH}/${PROJECT_NAME}/btrfs.img"
 MOUNT_POINT="/mnt/dbranch/${PROJECT_NAME}"
@@ -111,6 +111,8 @@ echo -e "${GREEN}✓ Subvolume 'main' created${NC}"
 echo "Creating data directory..."
 mkdir -p "${MOUNT_POINT}/main/data/pgdata"
 sudo chown -R ${USER_ID}:${USER_ID} "${MOUNT_POINT}"
+sudo setfacl -m u:${USER_ID}:rwx "${MOUNT_POINT}/main/data/pgdata"
+
 
 echo -e "${GREEN}✓ Directory structure created${NC}"
 echo ""

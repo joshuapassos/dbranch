@@ -24,8 +24,6 @@ unsafe extern "C" {
 impl CopyRef for CopyRefOperator {
     #[cfg(target_os = "linux")]
     fn copy_ref(&self, src: &File, dest: &File) -> Result<(), error::AppError> {
-        use std::os::fd::AsFd;
-
         let info = src.metadata().unwrap().len() as usize;
         // https://man7.org/linux/man-pages/man2/copy_file_range.2.html
         let ret = unsafe {

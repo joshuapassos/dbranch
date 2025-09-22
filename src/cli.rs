@@ -1,16 +1,16 @@
+use crate::config::DEFAULT_CONFIG_PATH;
 use crate::error::AppError;
 use crate::fiemap::{FolderInfo, get_folder_size};
 use crate::snapshot;
 use crate::{
-    btrfs,
     config::Config,
     database_operator::{DatabaseOperator, PostgresOperator},
 };
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 use prettytable::{Attr, Cell, Row, Table};
-use serde::{Deserialize, Serialize};
+use rustix::path::Arg;
 use size::Size;
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
@@ -32,8 +32,6 @@ pub enum Commands {
     Init(InitArgs),
     #[clap(about = "Initialize a PostgreSQL database")]
     InitPostgres,
-    #[clap(about = "Set the default branch project")]
-    SetDefault(SetDefaultArgs),
     #[clap(about = "Create a new branch project")]
     Create(CreateArgs),
     #[clap(about = "List all branches projects")]
@@ -52,8 +50,6 @@ pub enum Commands {
     Stop,
     #[clap(about = "Resume stopped branches and containers")]
     Resume,
-    #[clap(about = "Restart the dBranch system after reboot")]
-    Restart,
 }
 
 #[derive(Args, Debug)]
@@ -98,27 +94,8 @@ pub struct ShowArgs {
     id: String,
 }
 
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct Branch {
-    pub name: String,
-    pub port: u16,
-    pub created_at: DateTime<Utc>,
-}
-
-#[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
-pub struct Project {
-    pub name: String,
-    pub path: PathBuf,
-    pub active_branch: Option<String>,
-    pub port: u16,
-    pub created_at: DateTime<Utc>,
-    pub branches: Vec<Branch>,
-}
-
 pub struct AppState {
     pub config: Config,
-    pub active_project: Option<Project>,
-    pub projects: Vec<Project>,
 }
 
 pub struct CliHandler {
@@ -127,13 +104,6 @@ pub struct CliHandler {
 
 impl CliHandler {
     pub fn new(state: AppState) -> Self {
-        debug!(
-            "Creating new CliHandler with {} projects",
-            state.projects.len()
-        );
-        if let Some(ref active) = state.active_project {
-            debug!("Active project: {}", active.name);
-        }
         Self { state }
     }
 
@@ -148,7 +118,6 @@ impl CliHandler {
             }
             Commands::List => {
                 info!("Listing all branch projects");
-                debug!("Total projects: {}", self.state.projects.len());
                 Err(AppError::NotImplemented {
                     command: "list".into(),
                 })
@@ -157,85 +126,29 @@ impl CliHandler {
                 info!("Initializing dBranch instance: {}", args.name);
                 debug!("Init args: name={}, port={}", args.name, args.port);
 
-                if self.state.config.projects.contains(&args.name) {
-                    debug!("Project {} already exists in config", args.name);
-                    return Err(AppError::ProjectAlreadyExists { name: args.name });
-                }
-
-                let valid_port =
-                    self.state
-                        .config
-                        .get_valid_port()
-                        .ok_or(AppError::NoPortAvailable {
-                            min: self.state.config.port_range.0,
-                            max: self.state.config.port_range.1,
-                        })?;
-
-                let project = Project {
-                    name: args.name.clone(),
-                    path: Path::new(&self.state.config.path.clone()).join(args.name.clone()),
-                    active_branch: None,
-                    port: valid_port,
-                    created_at: Utc::now(),
-                    branches: Vec::new(),
-                };
-                debug!("Creating project at path: {:?}", project.path);
-
                 // Initialize individual BTRFS filesystem for this project
                 {
                     debug!(
                         "Initializing individual BTRFS filesystem for project: {}",
                         args.name
                     );
-                    let btrfs_operator =
-                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
-
-                    debug!("Checking BTRFS installation");
-                    btrfs_operator.check_btrfs().unwrap();
-
-                    debug!("Reserving disk space for project filesystem");
-                    btrfs_operator.reserve_space().unwrap();
-
-                    // debug!("Ensuring any existing mount is unmounted before mounting");
-                    // let _ = btrfs_operator.unmount_disk(); // Ignore errors - might not be mounted
-
-                    // debug!("Mounting project BTRFS filesystem");
-                    // btrfs_operator.mount_disk().unwrap();
-                    // info!(
-                    //     "Project BTRFS filesystem '{}' mounted successfully",
-                    //     args.name
-                    // );
 
                     info!("Project '{}' initialized with main subvolume", args.name);
                 }
 
-                // Create PostgreSQL database
-                // self.create_postgres(None, valid_port, &project).await;
-
                 debug!("Adding project to configuration");
-                self.state.config.add_project(project);
+                self.state.config.name = args.name.clone();
 
-                if self.state.config.default_project.is_none() {
-                    debug!("No default project set, setting {} as default", args.name);
-                    self.state
-                        .config
-                        .set_default_project(args.name.clone())
-                        .unwrap();
-                    info!("Set {} as default project", args.name);
-                }
+                self.state.config.save_config();
 
                 info!("Project {} initialized successfully", args.name);
                 Ok(())
             }
             Commands::InitPostgres => {
                 info!("Initializing standalone PostgreSQL database");
-                let project = self
-                    .state
-                    .config
-                    .get_project_info(None)
-                    .ok_or_else(|| AppError::DefaultProjectNotFound)?;
 
-                self.create_postgres(None, project.port, &project).await;
+                self.create_postgres(None, self.state.config.get_valid_port().unwrap())
+                    .await;
 
                 info!("Standalone PostgreSQL database initialized successfully");
                 Ok(())
@@ -246,34 +159,7 @@ impl CliHandler {
                     debug!("Creating from source: {}", source);
                 }
 
-                if self.state.config.projects.contains(&args.name) {
-                    debug!("Project {} already exists", args.name);
-                    return Err(AppError::ProjectAlreadyExists { name: args.name });
-                }
-
-                if let Some(ref active) = self.state.active_project {
-                    if active
-                        .branches
-                        .iter()
-                        .map(|b| b.name.clone())
-                        .find(|name| *name == args.name)
-                        .is_some()
-                    {
-                        debug!("Branch {} already exists", args.name);
-                        return Err(AppError::BranchAlreadyExists { name: args.name });
-                    }
-                }
-
-                // {
-                //     let btrfs_operator = btrfs::BtrfsOperator::new(
-                //         self.state.active_project.clone().unwrap(),
-                //         self.state.config.clone(),
-                //     );
-
-                //     btrfs_operator.create_snapshot(&args.name).unwrap();
-                // }
-
-                let project_name = self.state.config.default_project.clone().unwrap();
+                let project_name = self.state.config.name.clone();
 
                 let src_path = Path::new(&self.state.config.mount_point)
                     .join(&project_name.clone())
@@ -295,33 +181,16 @@ impl CliHandler {
                 let valid_port = self.state.config.get_valid_port().unwrap();
 
                 // Create PostgreSQL database
-                self.create_postgres(
-                    Some(args.name.clone()),
-                    valid_port,
-                    &self.state.active_project.clone().unwrap(),
-                )
-                .await;
+                self.create_postgres(Some(args.name.clone()), valid_port)
+                    .await;
 
                 self.state
                     .config
-                    .create_branch(
-                        self.state.active_project.clone().unwrap().name,
-                        args.name.clone(),
-                        valid_port,
-                    )
-                    .unwrap();
+                    .create_branch(args.name.clone(), valid_port);
 
                 Ok(())
             }
-            Commands::SetDefault(args) => {
-                info!("Setting default project to: {}", args.name);
-                self.state
-                    .config
-                    .set_default_project(args.name.clone())
-                    .unwrap();
-                debug!("Default project updated successfully");
-                Ok(())
-            }
+
             Commands::Delete(args) => {
                 info!("Deleting branch project: {}", args.id);
                 debug!("Delete command not yet implemented");
@@ -332,31 +201,18 @@ impl CliHandler {
             Commands::DeleteProject(args) => {
                 info!("Deleting project: {}", args.name);
 
-                if !self.state.config.projects.contains(&args.name) {
+                if self.state.config.name != args.name {
                     debug!("Project {} not found in config", args.name);
                     return Err(AppError::ProjectNotFound { name: args.name });
                 }
 
-                let project = self
-                    .state
-                    .config
-                    .get_project_info(Some(args.name.clone()))
-                    .ok_or_else(|| AppError::ProjectNotFound {
-                        name: args.name.clone(),
-                    })?;
-
-                debug!("Found project to delete: {:?}", project);
-
-                let btrfs_operator =
-                    crate::btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
-
                 let postgres_operator = PostgresOperator::new();
 
-                for branch in project.clone().branches {
+                for branch in &self.state.config.branches {
                     debug!("Deleting branch: {}", branch.name);
 
                     let _ = postgres_operator
-                        .delete_database(project.clone(), branch.name.as_str())
+                        .delete_database(self.state.config.clone(), branch.name.as_str())
                         .await;
                 }
 
@@ -364,34 +220,8 @@ impl CliHandler {
                 {
                     debug!("Deleting PostgreSQL container");
                     postgres_operator
-                        .delete_database(project.clone(), "main")
+                        .delete_database(self.state.config.clone(), "main")
                         .await?;
-                }
-
-                // Delete BTRFS filesystem
-                {
-                    debug!("Cleaning up project BTRFS filesystem");
-
-                    // Unmount and cleanup the entire project filesystem
-                    btrfs_operator.unmount_disk().unwrap_or_else(|e| {
-                        debug!("Failed to unmount BTRFS filesystem: {}", e);
-                    });
-
-                    btrfs_operator.cleanup_disk().unwrap_or_else(|e| {
-                        debug!("Failed to cleanup BTRFS filesystem: {}", e);
-                    });
-                }
-
-                // Remove project from config and filesystem
-                self.state.config.remove_project(&args.name)?;
-
-                // If this was the default project, unset it
-                if let Some(ref default) = self.state.config.default_project {
-                    if default == &args.name {
-                        debug!("Removing deleted project as default project");
-                        self.state.config.default_project = None;
-                        self.state.config.save_config();
-                    }
                 }
 
                 info!("Project {} deleted successfully", args.name);
@@ -407,71 +237,59 @@ impl CliHandler {
             Commands::Use(args) => {
                 info!("Switching to branch: {}", args.name);
 
-                let project = self
-                    .state
-                    .config
-                    .get_project_info(None)
-                    .ok_or_else(|| AppError::DefaultProjectNotFound)?;
-
-                debug!("Active project found: {}", project.name);
-
-                if project
-                    .branches
-                    .iter()
-                    .map(|b| b.name.clone())
-                    .find(|name| *name == args.name)
-                    .is_none()
-                    && args.name != "main"
-                {
-                    debug!("Branch {} not found in active project", args.name);
-                    return Err(AppError::BranchNotFound { name: args.name });
-                }
-
                 self.state
                     .config
-                    .set_active_branch(project.name.clone(), args.name.clone())
+                    .set_active_branch(args.name.clone())
                     .unwrap();
 
                 info!("Switched to branch: {} successfully", args.name);
                 Ok(())
             }
             Commands::Status => {
-                info!("Showing status of the active project");
-
-                let project = self
-                    .state
-                    .config
-                    .get_project_info(None)
-                    .ok_or_else(|| AppError::DefaultProjectNotFound)?;
-
-                debug!("Active project found: {}", project.name);
+                info!("Showing status of the project");
 
                 let postgres_operator = PostgresOperator::new();
 
                 println!("{}", String::from("=").repeat(80));
-                println!("PROJECT: {}", project.name);
+                println!("PROJECT: {}", self.state.config.name);
                 println!("{}", String::from("-").repeat(80));
-                println!("Path: {}", project.path.to_string_lossy());
+                println!("Path: {}", DEFAULT_CONFIG_PATH.to_string_lossy());
                 println!(
                     "🌿 Active Branch: {}",
-                    project.active_branch.as_deref().unwrap_or("none")
+                    self.state.config.active_branch.as_deref().unwrap_or("none")
                 );
 
-                let main_path = Path::new(&self.state.config.mount_point)
-                    .join(project.clone().name)
-                    .join("main");
-
-                let main_branch = (main_path.clone(), get_folder_size(&main_path).unwrap());
-
-                let branches: Vec<(PathBuf, FolderInfo)> = project
+                let main_branch = self
+                    .state
+                    .config
                     .branches
                     .iter()
+                    .find(|p| p.is_main)
                     .map(|b| {
                         (
-                            project.path.join(&b.name),
+                            Path::new(&self.state.config.mount_point).join(&b.name),
                             get_folder_size(
                                 &Path::new(&self.state.config.mount_point)
-                                    .join(project.clone().name)
+                                    .join(self.state.config.name.clone())
+                                    .join(&b.name),
+                            )
+                            .unwrap(),
+                        )
+                    })
+                    .unwrap();
+
+                let branches: Vec<(PathBuf, FolderInfo)> = self
+                    .state
+                    .config
+                    .branches
+                    .iter()
+                    .filter(|p| !p.is_main)
+                    .map(|b| {
+                        (
+                            Path::new(&self.state.config.mount_point).join(&b.name),
+                            get_folder_size(
+                                &Path::new(&self.state.config.mount_point)
+                                    .join(self.state.config.name.clone())
                                     .join(&b.name),
                             )
                             .unwrap(),
@@ -492,12 +310,12 @@ impl CliHandler {
                 ]));
 
                 let main_container_status = postgres_operator
-                    .is_container_running(format!("{}_main", project.name).as_str())
+                    .is_container_running(format!("{}_main", self.state.config.name).as_str())
                     .await
                     .unwrap_or(false);
 
                 let main_age = {
-                    let duration = Utc::now() - project.created_at;
+                    let duration = Utc::now() - self.state.config.created_at;
                     if duration.num_days() > 0 {
                         format!("{}d", duration.num_days())
                     } else if duration.num_hours() > 0 {
@@ -539,13 +357,17 @@ impl CliHandler {
                     let branch_name = branch.0.file_name().unwrap().to_string_lossy().to_string();
 
                     let container_status = postgres_operator
-                        .is_container_running(format!("{}_{}", project.name, branch_name).as_str())
+                        .is_container_running(
+                            format!("{}_{}", self.state.config.name, branch_name).as_str(),
+                        )
                         .await
                         .unwrap_or(false);
 
                     let age = {
                         let duration = Utc::now()
-                            - project
+                            - self
+                                .state
+                                .config
                                 .branches
                                 .iter()
                                 .find(|b| b.name == branch_name)
@@ -585,26 +407,27 @@ impl CliHandler {
             Commands::Stop => {
                 info!("Stopping all branches and containers");
 
-                for project in &self.state.projects {
-                    debug!("Stopping containers for project: {}", project.name);
+                debug!(
+                    "Stopping containers for project: {}",
+                    self.state.config.name
+                );
 
-                    let postgres_operator = PostgresOperator::new();
+                let postgres_operator = PostgresOperator::new();
 
-                    for branch in &project.branches {
-                        debug!("Stopping branch container: {}", branch.name);
-                        let _ = postgres_operator
-                            .stop_database(project.clone(), &branch.name)
-                            .await;
-                    }
+                for branch in &self.state.config.branches {
+                    debug!("Stopping branch container: {}", branch.name);
                     let _ = postgres_operator
-                        .stop_database(project.clone(), &project.name)
+                        .stop_database(self.state.config.clone(), &branch.name)
                         .await;
-
-                    debug!("Unmounting BTRFS filesystem for project: {}", project.name);
-                    let btrfs_operator =
-                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
-                    let _ = btrfs_operator.unmount_disk();
                 }
+                let _ = postgres_operator
+                    .stop_database(self.state.config.clone(), &self.state.config.name)
+                    .await;
+
+                debug!(
+                    "Unmounting BTRFS filesystem for project: {}",
+                    self.state.config.name
+                );
 
                 info!("All branches and containers stopped successfully");
                 Ok(())
@@ -612,130 +435,42 @@ impl CliHandler {
             Commands::Resume => {
                 info!("Resuming stopped branches and containers");
 
-                for project in &self.state.projects {
-                    debug!("Resuming project: {}", project.name);
+                debug!("Resuming project: {}", self.state.config.name);
 
-                    let mut btrfs_operator =
-                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
-                    if let Err(e) = btrfs_operator.mount_disk() {
-                        debug!("Failed to mount BTRFS for project {}: {}", project.name, e);
-                        continue;
-                    }
+                let postgres_operator = PostgresOperator::new();
+                let _ = postgres_operator
+                    .create_database(
+                        self.state.config.clone(),
+                        self.state.config.get_valid_port().unwrap(),
+                        "main",
+                    )
+                    .await;
 
-                    let postgres_operator = PostgresOperator::new();
+                for branch in &self.state.config.branches {
+                    debug!("Starting branch container: {}", branch.name);
                     let _ = postgres_operator
-                        .create_database(
-                            project.clone(),
-                            self.state.config.clone(),
-                            project.port,
-                            "main",
-                        )
+                        .create_database(self.state.config.clone(), branch.port, &branch.name)
                         .await;
-
-                    for branch in &project.branches {
-                        debug!("Starting branch container: {}", branch.name);
-                        let _ = postgres_operator
-                            .create_database(
-                                project.clone(),
-                                self.state.config.clone(),
-                                branch.port,
-                                &branch.name,
-                            )
-                            .await;
-                    }
                 }
 
                 info!("All branches and containers resumed successfully");
                 Ok(())
             }
-            Commands::Restart => {
-                info!("Restarting dBranch system after reboot");
-
-                // Stop all containers and unmount filesystems
-                for project in &self.state.projects {
-                    debug!("Stopping containers for project: {}", project.name);
-
-                    // Stop main project container
-                    let postgres_operator = PostgresOperator::new();
-                    let _ = postgres_operator
-                        .stop_database(project.clone(), &project.name)
-                        .await;
-
-                    // Stop all branch containers
-                    for branch in &project.branches {
-                        debug!("Stopping branch container: {}", branch.name);
-                        let _ = postgres_operator
-                            .stop_database(project.clone(), &branch.name)
-                            .await;
-                    }
-
-                    // Unmount BTRFS filesystem
-                    debug!("Unmounting BTRFS filesystem for project: {}", project.name);
-                    let btrfs_operator =
-                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
-                    let _ = btrfs_operator.unmount_disk();
-                }
-
-                // Resume all containers with proper mounts
-                for project in &self.state.projects {
-                    debug!("Resuming project: {}", project.name);
-
-                    // Mount BTRFS filesystem
-                    let mut btrfs_operator =
-                        btrfs::BtrfsOperator::new(project.clone(), self.state.config.clone());
-                    if let Err(e) = btrfs_operator.mount_disk() {
-                        debug!("Failed to mount BTRFS for project {}: {}", project.name, e);
-                        continue;
-                    }
-
-                    // Start main project container
-                    let postgres_operator = PostgresOperator::new();
-                    let _ = postgres_operator
-                        .create_database(
-                            project.clone(),
-                            self.state.config.clone(),
-                            project.port,
-                            "main",
-                        )
-                        .await;
-
-                    // Start all branch containers
-                    for branch in &project.branches {
-                        debug!("Starting branch container: {}", branch.name);
-                        let _ = postgres_operator
-                            .create_database(
-                                project.clone(),
-                                self.state.config.clone(),
-                                branch.port,
-                                &branch.name,
-                            )
-                            .await;
-                    }
-                }
-
-                info!("dBranch system restarted successfully");
-                Ok(())
-            }
         }
     }
 
-    async fn create_postgres(&mut self, name: Option<String>, valid_port: u16, project: &Project) {
+    async fn create_postgres(&mut self, name: Option<String>, valid_port: u16) {
         debug!("Initializing PostgreSQL database creation");
         let postgres_operator = PostgresOperator::new();
         debug!(
-            "Finding available port in range {:?}",
-            self.state.config.port_range
+            "Finding available port in range {:?}, {:?}",
+            self.state.config.port_min, self.state.config.port_max
         );
         info!("Found available port: {}", valid_port);
         let db_name = name.unwrap_or_else(|| "main".to_string());
         debug!("Creating PostgreSQL database: {}", db_name);
         postgres_operator
-            .create_database(
-                project.clone(),
-                self.state.config.clone(),
-                valid_port,
-                db_name.as_str(),
-            )
+            .create_database(self.state.config.clone(), valid_port, db_name.as_str())
             .await
             .unwrap();
         info!("PostgreSQL database created successfully");
