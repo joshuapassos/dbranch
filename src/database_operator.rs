@@ -155,6 +155,7 @@ impl DatabaseOperator for PostgresOperator {
         }
 
         let rm_output = RmCommand::new(format!("{}_{}", config.name, name))
+            .volumes()
             .execute()
             .await
             .map_err(|e| AppError::Docker {

@@ -208,7 +208,14 @@ impl CliHandler {
 
                 let postgres_operator = PostgresOperator::new();
 
-                for branch in &self.state.config.branches {
+                for branch in self
+                    .state
+                    .config
+                    .branches
+                    .iter()
+                    .filter(|b| !b.is_main)
+                    .collect::<Vec<&crate::config::Branch>>()
+                {
                     debug!("Deleting branch: {}", branch.name);
 
                     let _ = postgres_operator
@@ -216,13 +223,9 @@ impl CliHandler {
                         .await;
                 }
 
-                // Delete PostgreSQL container
-                {
-                    debug!("Deleting PostgreSQL container");
-                    postgres_operator
-                        .delete_database(self.state.config.clone(), "main")
-                        .await?;
-                }
+                self.state.config.branches.clear();
+
+                self.state.config.save_config();
 
                 info!("Project {} deleted successfully", args.name);
                 Ok(())
@@ -325,13 +328,13 @@ impl CliHandler {
                     }
                 };
 
-                table.add_row(Row::new(vec![
-                    Cell::new("📦 Shared Base"),
-                    Cell::new(&Size::from_bytes(main_branch.1.shared_size).to_string()),
-                    Cell::new("-"),
-                    Cell::new("🔗 Shared"),
-                    Cell::new("-"),
-                ]));
+                // table.add_row(Row::new(vec![
+                //     Cell::new("📦 Shared Base"),
+                //     Cell::new(&Size::from_bytes(main_branch.1.shared_size).to_string()),
+                //     Cell::new("-"),
+                //     Cell::new("🔗 Shared"),
+                //     Cell::new("-"),
+                // ]));
 
                 table.add_row(Row::new(vec![
                     Cell::new("main").with_style(Attr::Bold),
